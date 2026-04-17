@@ -1,62 +1,57 @@
 import asyncio
-import ccxt
-import pandas as pd
-from fastapi import FastAPI, BackgroundTasks, Request
+import logging
+import sys
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from core.engine import PaperTradingEngine
-from strategies.strategy_1 import check_entry_signal, check_exit_signal
+# Si vous avez un fichier market.py et strategy_1.py :
+# from core.market import fetch_ohlcv
+# from strategies.strategy_1 import check_entry_signal, check_exit_signal
 
-app = FastAPI(title="Crypto Bot Simulation")
+# --- CONFIGURATION DES LOGS POUR RAILWAY ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)] # Force l'affichage dans les logs Railway
+)
+logger = logging.getLogger("BotMain")
+
+app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 engine = PaperTradingEngine(initial_capital=1000)
-exchange = ccxt.binance()
-SYMBOL = "BTC/USDT"
-TIMEFRAME = "15m"
-BOT_RUNNING = False
+
+bot_running = False
 
 async def bot_loop():
-    global BOT_RUNNING
-    while BOT_RUNNING:
-        try:
-            ohlcv = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=10)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            current_price = df.iloc[-1]['close']
-            current_time = df.iloc[-1]['timestamp']
+    global bot_running
+    logger.info("🚀 Démarrage de la boucle du bot...")
+    while bot_running:
+        logger.info("Analyse du marché en cours...")
+        # Ici vous mettrez la logique de fetch_ohlcv et les signaux
+        # Exemple factice pour montrer que ça tourne :
+        await asyncio.sleep(60) # Pause de 60 secondes entre chaque analyse
 
-            if engine.position:
-                exit_signal, perf = check_exit_signal(current_price, engine.position['entry_price'])
-                if exit_signal:
-                    engine.sell(current_price, current_time, exit_signal)
-            else:
-                if check_entry_signal(df.iloc[:-1]): 
-                    engine.buy(SYMBOL, current_price, current_time)
-        except Exception as e:
-            print(f"Erreur dans la boucle: {e}")
-        
-        await asyncio.sleep(60)
-
-@app.get("/")
-def read_root(request: Request):
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-@app.get("/health")
-def health_check():
-    return {"status": "healthy", "bot_running": BOT_RUNNING}
-
 @app.post("/start")
-async def start_bot(background_tasks: BackgroundTasks):
-    global BOT_RUNNING
-    if not BOT_RUNNING:
-        BOT_RUNNING = True
-        background_tasks.add_task(bot_loop)
-        return {"message": "Bot démarré"}
-    return {"message": "Le bot est déjà en cours d'exécution"}
+async def start_bot():
+    global bot_running
+    if not bot_running:
+        bot_running = True
+        asyncio.create_task(bot_loop())
+        logger.info("✅ Commande reçue : Bot Démarré via l'interface web.")
+        return {"status": "Bot démarré"}
+    return {"status": "Bot déjà en cours"}
 
 @app.post("/stop")
-def stop_bot():
-    global BOT_RUNNING
-    BOT_RUNNING = False
-    return {"message": "Bot arrêté"}
+async def stop_bot():
+    global bot_running
+    bot_running = False
+    logger.info("🛑 Commande reçue : Bot Arrêté via l'interface web.")
+    return {"status": "Bot arrêté"}
 
 @app.get("/stats")
 def get_stats():
