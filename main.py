@@ -71,7 +71,8 @@ async def bot_loop():
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    # On précise explicitement "request=" et "name="
+    return templates.TemplateResponse(request=request, name="index.html")
 
 @app.post("/start")
 async def start_bot():
