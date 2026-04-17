@@ -6,7 +6,7 @@ import os
 app = FastAPI()
 
 # Configuration du dossier contenant index.html (le dossier actuel)
-templates = Jinja2Templates(directory=".")
+templates = Jinja2Templates(directory="templates")
 
 # Variables globales du bot
 current_price = 0.0
