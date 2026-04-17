@@ -78,7 +78,7 @@ async def home(request: Request):
     # C'EST ICI LA CORRECTION : on utilise request=request et name="index.html"
     return templates.TemplateResponse(request=request, name="index.html")
 
-@app.get("/api/stats")
+@app.get("/stats")
 async def get_stats():
     # Renvoie les statistiques au format JSON pour le dashboard
     return {
