@@ -25,7 +25,7 @@ templates = Jinja2Templates(directory="templates")
 engine = PaperTradingEngine(initial_capital=1000)
 
 # Initialisation de l'échange (Binance public)
-exchange = ccxt.binance({
+exchange = ccxt.kucoin({
     'enableRateLimit': True,
 })
 
