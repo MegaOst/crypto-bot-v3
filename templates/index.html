@@ -3,48 +3,88 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - Crypto Bot Simulation</title>
+    <title>Trading Bot Dashboard</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f4f4f9; }
-        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 600px; margin: auto; }
-        button { padding: 10px 15px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; color: white;}
-        .start { background-color: #28a745; }
-        .stop { background-color: #dc3545; }
-        .stats { margin-top: 20px; font-size: 1.1em; }
+        body { font-family: Arial, sans-serif; background-color: #1e1e2f; color: #ffffff; padding: 20px; }
+        .card { background-color: #2a2a40; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .stat-value { font-size: 24px; font-weight: bold; color: #00d2ff; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #444; }
+        th { background-color: #33334d; }
+        .green { color: #28a745; font-weight: bold; }
+        .red { color: #dc3545; font-weight: bold; }
     </style>
 </head>
 <body>
+
+    <h1>🚀 Dashboard Trading Bot</h1>
+
     <div class="card">
-        <h2>📈 Crypto Bot Simulation (Paper Trading)</h2>
-        <div>
-            <button class="start" onclick="action('start')">Démarrer le Bot</button>
-            <button class="stop" onclick="action('stop')">Arrêter le Bot</button>
-        </div>
-        <div class="stats" id="stats">
-            <p>Chargement des statistiques...</p>
-        </div>
+        <h2>📊 Statistiques en Direct</h2>
+        <p>Prix BTC/USDT : <span class="stat-value" id="price">Chargement...</span></p>
+        <p>Capital Actuel : <span class="stat-value" id="capital">Chargement...</span></p>
+        <p>Statut du Bot : <span id="status" style="color: #ffcc00;">Chargement...</span></p>
+    </div>
+
+    <div class="card">
+        <h2>📜 Historique des 10 derniers Trades</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Heure</th>
+                    <th>Prix Achat</th>
+                    <th>Prix Vente</th>
+                    <th>Performance</th>
+                </tr>
+            </thead>
+            <tbody id="trade-list">
+                <tr><td colspan="4">En attente du premier trade...</td></tr>
+            </tbody>
+        </table>
     </div>
 
     <script>
-        async function action(type) {
-            await fetch(`/${type}`, { method: 'POST' });
-            alert(`Commande ${type} envoyée !`);
-            fetchStats();
-        }
-
         async function fetchStats() {
-            const res = await fetch('/stats');
-            const data = await res.json();
-            document.getElementById('stats').innerHTML = `
-                <p><strong>Capital initial :</strong> ${data.initial_capital} $</p>
-                <p><strong>Capital actuel :</strong> ${data.current_capital.toFixed(2)} $</p>
-                <p><strong>Total des trades :</strong> ${data.total_trades}</p>
-                <p><strong>Win Rate :</strong> ${data.win_rate.toFixed(2)} %</p>
-            `;
+            try {
+                const response = await fetch('/stats');
+                const data = await response.json();
+
+                // Mise à jour des stats globales
+                document.getElementById('price').innerText = data.price.toFixed(2) + " $";
+                document.getElementById('capital').innerText = data.capital.toFixed(2) + " $";
+                document.getElementById('status').innerText = data.status;
+
+                // Mise à jour de l'historique des trades
+                const tbody = document.getElementById('trade-list');
+                
+                if (data.trades.length > 0) {
+                    tbody.innerHTML = ""; // On vide le tableau
+                    
+                    // On parcourt les trades en sens inverse pour avoir le plus récent en haut
+                    [...data.trades].reverse().forEach(trade => {
+                        const isWin = trade.profit > 0;
+                        const colorClass = isWin ? "green" : "red";
+                        const sign = isWin ? "+" : "";
+
+                        const row = document.createElement("tr");
+                        row.innerHTML = `
+                            <td>${trade.time}</td>
+                            <td>${trade.buy_price.toFixed(2)} $</td>
+                            <td>${trade.sell_price.toFixed(2)} $</td>
+                            <td class="${colorClass}">${sign}${trade.profit.toFixed(2)} %</td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                }
+            } catch (error) {
+                console.error("Erreur de récupération des données :", error);
+            }
         }
 
-        fetchStats();
-        setInterval(fetchStats, 5000); // Rafraîchissement toutes les 5 secondes
+        // Rafraîchir toutes les 2 secondes
+        setInterval(fetchStats, 2000);
+        fetchStats(); // Premier appel immédiat
     </script>
+
 </body>
 </html>

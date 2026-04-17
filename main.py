@@ -1,96 +1,101 @@
-import os
 import asyncio
-import logging
-import sys
-import time
-import ccxt
+from datetime import datetime
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from core.engine import PaperTradingEngine
-
-# --- CONFIGURATION DES LOGS ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger("BotMain")
-
-# --- VARIABLES D'ENVIRONNEMENT ---
-SYMBOL = os.getenv("SYMBOL", "BTC/USDT")
+import ccxt
+import uvicorn
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
-engine = PaperTradingEngine(initial_capital=1000)
 
-# Initialisation de l'échange (Binance public)
-exchange = ccxt.kucoin({
-    'enableRateLimit': True,
-})
+# --- VARIABLES GLOBALES ---
+current_capital = 1000.0
+current_price = 0.0
+bot_status = "Démarrage..."
+trade_history = []  # Historique des trades
+position = None     # None si on n'a rien, "LONG" si on a acheté
+buy_price = 0.0     # Prix auquel on a acheté
 
-bot_running = False
+# Configuration de l'échange (KuCoin ne bloque pas les IP US)
+exchange = ccxt.kucoin({'enableRateLimit': True})
+symbol = 'BTC/USDT'
 
-async def bot_loop():
-    global bot_running
-    logger.info(f"🚀 Démarrage du bot sur {SYMBOL} avec prix en direct...")
+# --- BOUCLE DE TRADING (Tâche de fond) ---
+async def trading_loop():
+    global current_capital, current_price, bot_status, trade_history, position, buy_price
     
-    while bot_running:
+    await asyncio.sleep(2) # Attendre que le serveur démarre
+    
+    while True:
         try:
             # 1. Récupération du prix en direct
-            ticker = exchange.fetch_ticker(SYMBOL)
+            ticker = exchange.fetch_ticker(symbol)
             current_price = ticker['last']
-            current_time = time.strftime("%Y-%m-%d %H:%M:%S")
             
-            logger.info(f"📊 Prix actuel de {SYMBOL} : {current_price}$")
-
-            # 2. Logique de trading (Simulation basique)
-            if engine.position is None:
-                # Acheter arbitrairement pour la démo
-                logger.info("💡 Signal d'entrée détecté (Démo)")
-                engine.buy(SYMBOL, current_price, current_time)
-            
-            else:
-                # Calcul du profit actuel en direct
-                entry_price = engine.position['entry_price']
-                profit_pct = (current_price - entry_price) / entry_price
+            # 2. Logique de trading (Simulation / Paper Trading)
+            if position is None:
+                # On simule un achat pour l'exemple
+                position = "LONG"
+                buy_price = current_price
+                bot_status = "En position (Achat effectué)"
+                print(f"ACHAT à {buy_price} $")
                 
-                logger.info(f"⏳ Position en cours... P&L latent : {profit_pct*100:.2f}%")
-
-                # Vendre si +0.5% (Take Profit) ou -0.5% (Stop Loss)
-                if profit_pct >= 0.005:
-                    engine.sell(current_price, current_time, reason="Take Profit (+0.5%)")
-                elif profit_pct <= -0.005:
-                    engine.sell(current_price, current_time, reason="Stop Loss (-0.5%)")
-
+            elif position == "LONG":
+                # Calcul de la performance actuelle
+                profit_pct = ((current_price - buy_price) / buy_price) * 100
+                bot_status = f"En position | Profit latent: {profit_pct:.2f}%"
+                
+                # On vend si on touche +0.05% ou -0.05% (Très serré, juste pour voir le bot s'animer vite !)
+                if profit_pct >= 0.05 or profit_pct <= -0.05:
+                    # Mise à jour du capital
+                    current_capital = current_capital + (current_capital * (profit_pct / 100))
+                    
+                    # Enregistrement du trade
+                    trade = {
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "buy_price": buy_price,
+                        "sell_price": current_price,
+                        "profit": profit_pct
+                    }
+                    trade_history.append(trade)
+                    
+                    print(f"VENTE à {current_price} $ | Profit: {profit_pct:.2f}%")
+                    
+                    # Réinitialisation pour le prochain trade
+                    position = None
+                    buy_price = 0.0
+                    bot_status = "Recherche d'opportunité..."
+                    
+                    # Pause avant de racheter
+                    await asyncio.sleep(5)
+                    
         except Exception as e:
-            logger.error(f"❌ Erreur lors de la récupération des données : {e}")
-        
-        # Attendre 10 secondes avant la prochaine vérification
+            bot_status = f"Erreur API: {str(e)}"
+            print(f"❌ Erreur: {e}")
+            
+        # On attend 10 secondes avant la prochaine vérification du prix
         await asyncio.sleep(10)
 
-@app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
-    # On précise explicitement "request=" et "name="
-    return templates.TemplateResponse(request=request, name="index.html")
+# --- ROUTES WEB ---
+@app.on_event("startup")
+async def startup_event():
+    # Lancement de la boucle de trading en arrière-plan
+    asyncio.create_task(trading_loop())
 
-@app.post("/start")
-async def start_bot():
-    global bot_running
-    if not bot_running:
-        bot_running = True
-        asyncio.create_task(bot_loop())
-        logger.info("✅ Bot Démarré.")
-        return {"status": "Bot démarré"}
-    return {"status": "Bot déjà en cours"}
-
-@app.post("/stop")
-async def stop_bot():
-    global bot_running
-    bot_running = False
-    logger.info("🛑 Bot Arrêté.")
-    return {"status": "Bot arrêté"}
+@app.get("/")
+async def home(request: Request):
+    # Affiche le dashboard HTML
+    return templates.TemplateResponse("index.html", {"request": request})
 
 @app.get("/stats")
-def get_stats():
-    return engine.get_stats()
+async def get_stats():
+    # Renvoie les données au format JSON pour le dashboard
+    return {
+        "price": current_price,
+        "capital": current_capital,
+        "status": bot_status,
+        "trades": trade_history[-10:] # On n'envoie que les 10 derniers trades
+    }
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
