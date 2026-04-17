@@ -4,3 +4,7 @@ ccxt
 pandas
 pydantic
 jinja2
+fastapi
+uvicorn
+jinja2
+ccxt
