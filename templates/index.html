@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Crypto Bot Simulation</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f4f4f9; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 600px; margin: auto; }
+        button { padding: 10px 15px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; color: white;}
+        .start { background-color: #28a745; }
+        .stop { background-color: #dc3545; }
+        .stats { margin-top: 20px; font-size: 1.1em; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>📈 Crypto Bot Simulation (Paper Trading)</h2>
+        <div>
+            <button class="start" onclick="action('start')">Démarrer le Bot</button>
+            <button class="stop" onclick="action('stop')">Arrêter le Bot</button>
+        </div>
+        <div class="stats" id="stats">
+            <p>Chargement des statistiques...</p>
+        </div>
+    </div>
+
+    <script>
+        async function action(type) {
+            await fetch(`/${type}`, { method: 'POST' });
+            alert(`Commande ${type} envoyée !`);
+            fetchStats();
+        }
+
+        async function fetchStats() {
+            const res = await fetch('/stats');
+            const data = await res.json();
+            document.getElementById('stats').innerHTML = `
+                <p><strong>Capital initial :</strong> ${data.initial_capital} $</p>
+                <p><strong>Capital actuel :</strong> ${data.current_capital.toFixed(2)} $</p>
+                <p><strong>Total des trades :</strong> ${data.total_trades}</p>
+                <p><strong>Win Rate :</strong> ${data.win_rate.toFixed(2)} %</p>
+            `;
+        }
+
+        fetchStats();
+        setInterval(fetchStats, 5000); // Rafraîchissement toutes les 5 secondes
+    </script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+ccxt
+pandas
+pydantic
+jinja2
