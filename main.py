@@ -85,7 +85,7 @@ async def startup_event():
 @app.get("/")
 async def home(request: Request):
     # Affiche le dashboard HTML
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="index.html")
 
 @app.get("/stats")
 async def get_stats():
