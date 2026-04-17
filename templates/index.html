@@ -7,13 +7,15 @@
     <style>
         body { font-family: Arial, sans-serif; background-color: #f4f4f9; padding: 20px; }
         .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0px 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        .btn { padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; color: white; }
+        .btn { padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; color: white; margin-right: 10px;}
         .btn-start { background-color: #28a745; }
         .btn-stop { background-color: #dc3545; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
         .profit { color: green; font-weight: bold; }
         .loss { color: red; font-weight: bold; }
+        .trade-status-ACHAT { color: green; }
+        .trade-status-VENTE { color: red; }
     </style>
 </head>
 <body>
@@ -24,8 +26,8 @@
     <div class="card">
         <h2>Contrôle</h2>
         <p>Statut actuel : <strong id="bot-state">Chargement...</strong></p>
-        <button class="btn btn-start" onclick="actionBot('/start')">Démarrer</button>
-        <button class="btn btn-stop" onclick="actionBot('/stop')">Arrêter</button>
+        <button class="btn btn-start" onclick="startBot()">Démarrer</button>
+        <button class="btn btn-stop" onclick="stopBot()">Arrêter</button>
     </div>
 
     <!-- Statistiques -->
@@ -42,10 +44,9 @@
             <thead>
                 <tr>
                     <th>Date</th>
-                    <th>Prix Achat</th>
-                    <th>Prix Vente</th>
+                    <th>Action</th>
+                    <th>Prix</th>
                     <th>Performance</th>
-                    <th>Statut</th>
                 </tr>
             </thead>
             <tbody id="trades-list">
@@ -55,55 +56,77 @@
     </div>
 
     <script>
-    // Met à jour les statistiques toutes les 2 secondes
-    async function fetchStats() {
+    // Met à jour les statistiques et l'historique toutes les 2 secondes
+    async function fetchAndUpdateStats() { // Renommée pour clarifier
         try {
             const response = await fetch('/stats');
             const data = await response.json();
             
-            // Mise à jour des textes
-            document.getElementById('price').innerText = data.price.toFixed(2) + ' $';
-            document.getElementById('capital').innerText = data.capital.toFixed(2) + ' $';
-            document.getElementById('status').innerText = data.status;
+            // Mise à jour des textes pour les stats
+            document.getElementById('current-price').innerText = data.price.toFixed(2) + ' $';
+            document.getElementById('current-capital').innerText = data.capital.toFixed(2) + ' $';
+            document.getElementById('bot-state').innerText = data.status; // Utilise le bon ID pour le statut
+            
+            // Mise à jour de la liste des trades
+            const tradesList = document.getElementById('trades-list');
+            tradesList.innerHTML = ''; // Vide la liste actuelle avant de la remplir
+
+            data.trades.forEach(trade => {
+                const row = tradesList.insertRow();
+                const dateCell = row.insertCell(0);
+                const actionCell = row.insertCell(1);
+                const priceCell = row.insertCell(2);
+                const performanceCell = row.insertCell(3); // Ajout pour performance
+
+                dateCell.innerText = new Date(trade.date).toLocaleString(); // Formatage de la date
+                actionCell.innerText = trade.action;
+                actionCell.className = `trade-status-${trade.action}`; // Ajout de classe CSS pour la couleur
+                priceCell.innerText = trade.price.toFixed(2) + ' $';
+
+                // Calcul et affichage de la performance (si possible)
+                // Pour l'instant, on affiche juste le prix, la performance réelle sera plus complexe
+                performanceCell.innerText = "-"; 
+            });
             
         } catch (error) {
-            console.error("Erreur lors de la récupération des stats :", error);
+            console.error("Erreur lors de la récupération des stats et trades :", error);
+            document.getElementById('bot-state').innerText = "Erreur de connexion"; // Indique une erreur sur le dashboard
         }
     }
 
-    // Fonction pour démarrer le bot (avec POST)
+    // Fonction pour démarrer le bot (appelée par le bouton Démarrer)
     async function startBot() {
         try {
             const response = await fetch('/start', { 
-                method: 'POST' // <-- C'est ici la correction !
+                method: 'POST' 
             });
             const data = await response.json();
             console.log(data.message);
-            fetchStats(); // Met à jour l'interface immédiatement
+            fetchAndUpdateStats(); // Met à jour l'interface immédiatement après l'action
         } catch (error) {
             console.error("Erreur lors du démarrage :", error);
         }
     }
 
-    // Fonction pour arrêter le bot (avec POST)
+    // Fonction pour arrêter le bot (appelée par le bouton Arrêter)
     async function stopBot() {
         try {
             const response = await fetch('/stop', { 
-                method: 'POST' // <-- C'est ici la correction !
+                method: 'POST' 
             });
             const data = await response.json();
             console.log(data.message);
-            fetchStats(); // Met à jour l'interface immédiatement
+            fetchAndUpdateStats(); // Met à jour l'interface immédiatement après l'action
         } catch (error) {
             console.error("Erreur lors de l'arrêt :", error);
         }
     }
 
     // Lancer la mise à jour automatique toutes les 2 secondes (2000 ms)
-    setInterval(fetchStats, 2000);
+    setInterval(fetchAndUpdateStats, 2000);
     
     // Charger les stats une première fois dès l'ouverture de la page
-    fetchStats();
+    fetchAndUpdateStats();
 </script>
 
 
