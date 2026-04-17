@@ -1,7 +1,7 @@
 import asyncio
 import sqlite3
 import os
-import ccxt.async_support as ccxt  # Version asynchrone pour ne pas bloquer FastAPI
+import ccxt.async_support as ccxt
 from fastapi import FastAPI, Request
 from fastapi.templating import Jinja2Templates
 
@@ -14,15 +14,19 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 # --- VARIABLES GLOBALES ---
 current_price = 0.00
-current_capital = 1000.00  # Capital de départ par défaut
+current_capital = 1000.00
 bot_status = "Arrêté"
 bot_running = False
 
+# Variables pour la simulation de stratégie
+has_position = False
+buy_price = 0.0
+
 # --- BASE DE DONNÉES SQLITE ---
+DB_PATH = os.path.join(BASE_DIR, 'trading_bot.db')
+
 def init_db():
-    # Enregistre la base de données dans le même dossier que le script
-    db_path = os.path.join(BASE_DIR, 'trading_bot.db')
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS trades (
@@ -35,54 +39,95 @@ def init_db():
     conn.commit()
     conn.close()
 
+def log_trade(action, price):
+    """Enregistre un trade dans la base de données"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("INSERT INTO trades (action, price) VALUES (?, ?)", (action, price))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Erreur BDD : {e}")
+
+def get_recent_trades():
+    """Récupère les 50 derniers trades pour le dashboard"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT action, price, timestamp FROM trades ORDER BY timestamp DESC LIMIT 50")
+        trades = [{"action": row[0], "price": row[1], "date": row[2]} for row in c.fetchall()]
+        conn.close()
+        return trades
+    except:
+        return []
+
 init_db()
 
 # --- LOGIQUE DU BOT EN ARRIÈRE-PLAN ---
 async def run_bot():
-    """Boucle qui tourne en permanence pour récupérer le prix"""
-    global current_price, bot_status, bot_running
+    global current_price, bot_status, bot_running, current_capital
+    global has_position, buy_price
     
-    # On utilise Binance en mode asynchrone
     exchange = ccxt.binance()
+    
+    # Message de démarrage pour les logs
+    print("Engine: Moteur initialisé avec un capital de", current_capital, "$")
     
     while True:
         if bot_running:
             try:
-                # Récupère le prix du Bitcoin en USDT (avec await car asynchrone)
+                # 1. Récupération du prix
                 ticker = await exchange.fetch_ticker('BTC/USDT')
                 current_price = ticker['last']
                 bot_status = "Actif"
-                print(f"Prix actualisé : {current_price} $")
+                print(f"[BOT] Prix actualisé : {current_price} $")
+
+                # ==========================================
+                # 2. STRATÉGIE (Simulation d'achats/ventes)
+                # ==========================================
+                if not has_position:
+                    # On simule un signal d'achat
+                    print(f"🚀 Signal d'ACHAT détecté ! Achat à {current_price} $")
+                    buy_price = current_price
+                    has_position = True
+                    log_trade("ACHAT", current_price)
+                    
+                elif has_position and current_price != buy_price:
+                    # On simule une vente (dès que le prix bouge pour l'exemple)
+                    profit = current_price - buy_price
+                    current_capital += profit
+                    print(f"📉 Signal de VENTE détecté ! Vente à {current_price} $ | Profit: {profit:.2f} $")
+                    has_position = False
+                    log_trade("VENTE", current_price)
+                # ==========================================
+
             except Exception as e:
                 print(f"Erreur de récupération du prix : {e}")
         else:
             bot_status = "Arrêté"
             
-        # Attend 5 secondes avant de rafraîchir pour ne pas spammer l'API
+        # Attend 5 secondes avant de rafraîchir
         await asyncio.sleep(5)
-        
-    # Fermeture propre de l'échange (bonne pratique, bien que la boucle soit infinie)
-    await exchange.close()
 
 # --- DÉMARRAGE DE LA TÂCHE AU LANCEMENT ---
 @app.on_event("startup")
 async def startup_event():
-    # Lance la boucle run_bot() en arrière-plan au démarrage du serveur
     asyncio.create_task(run_bot())
 
 # --- ROUTES DE L'INTERFACE WEB ---
 @app.get("/")
 async def home(request: Request):
-    # Affiche le fichier index.html situé dans le dossier templates
     return templates.TemplateResponse(request=request, name="index.html")
 
 @app.get("/stats")
 async def stats():
-    # Envoie les données en temps réel au dashboard HTML
+    # Renvoie les statistiques ET l'historique des trades au dashboard
     return {
         "price": current_price,
         "capital": current_capital,
-        "status": bot_status
+        "status": bot_status,
+        "trades": get_recent_trades()
     }
 
 @app.post("/start")
