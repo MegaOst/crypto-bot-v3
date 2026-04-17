@@ -1,91 +1,91 @@
-from fastapi import FastAPI, Request
-from fastapi.templating import Jinja2Templates
+import asyncio
 import sqlite3
 import os
+import ccxt
+from fastapi import FastAPI, Request
+from fastapi.templating import Jinja2Templates
 
 app = FastAPI()
 
-# Configuration du dossier contenant index.html (le dossier actuel)
-templates = Jinja2Templates(directory="templates")
+# Indique que le fichier index.html se trouve dans le même dossier que main.py
+templates = Jinja2Templates(directory=".")
 
-# Variables globales du bot
-current_price = 0.0
-current_capital = 1000.0  # Mettez votre capital de départ ici
-bot_state = "Arrêté" # État du bot
+# --- VARIABLES GLOBALES ---
+current_price = 0.00
+current_capital = 1000.00  # Capital de départ par défaut
+bot_status = "Arrêté"
+bot_running = False
 
-# --- CONFIGURATION BASE DE DONNÉES SQLite ---
-# Utilise le volume Railway /app/data s'il existe, sinon crée en local
-DB_PATH = "/app/data/trades.db" if os.path.exists("/app/data") else "trades.db"
-
+# --- BASE DE DONNÉES SQLITE ---
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
+    conn = sqlite3.connect('trading_bot.db')
+    c = conn.cursor()
+    c.execute('''
         CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            buy_price REAL,
-            sell_price REAL,
-            performance REAL,
-            status TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            action TEXT, 
+            price REAL, 
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     conn.commit()
     conn.close()
 
-# Initialiser la base au lancement
 init_db()
 
-def enregistrer_trade(buy_price, sell_price, performance, status):
-    """ Fonction à appeler dans votre logique de bot quand un trade se termine """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO trades (buy_price, sell_price, performance, status) 
-        VALUES (?, ?, ?, ?)
-    ''', (buy_price, sell_price, performance, status))
-    conn.commit()
-    conn.close()
+# --- LOGIQUE DU BOT EN ARRIÈRE-PLAN ---
+async def run_bot():
+    """Boucle qui tourne en permanence pour récupérer le prix"""
+    global current_price, bot_status, bot_running
+    
+    # On utilise Binance par défaut (vous pouvez changer si besoin)
+    exchange = ccxt.binance()
+    
+    while True:
+        if bot_running:
+            try:
+                # Récupère le prix du Bitcoin en USDT
+                ticker = exchange.fetch_ticker('BTC/USDT')
+                current_price = ticker['last']
+                bot_status = "Actif"
+                print(f"Prix actualisé : {current_price} $")
+            except Exception as e:
+                print(f"Erreur de récupération du prix : {e}")
+        else:
+            bot_status = "Arrêté"
+            
+        # Attend 5 secondes avant de rafraîchir pour ne pas spammer l'API
+        await asyncio.sleep(5)
 
-# --- ROUTES WEB ---
+# --- DÉMARRAGE DE LA TÂCHE AU LANCEMENT ---
+@app.on_event("startup")
+async def startup_event():
+    # Lance la boucle run_bot() en arrière-plan au démarrage du serveur
+    asyncio.create_task(run_bot())
 
+# --- ROUTES DE L'INTERFACE WEB ---
 @app.get("/")
 async def home(request: Request):
-    # C'est ici qu'on a corrigé l'erreur précédente : name= et request=
-    return templates.TemplateResponse(name="index.html", request=request)
+    # Affiche le fichier index.html
+    return templates.TemplateResponse(request=request, name="index.html")
 
 @app.get("/stats")
-async def get_stats():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    # On récupère tous les trades du plus récent au plus ancien
-    cursor.execute('SELECT * FROM trades ORDER BY id DESC')
-    trades = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-
+async def stats():
+    # Envoie les données en temps réel au dashboard HTML
     return {
-        "current_price": current_price,
-        "current_capital": current_capital,
-        "bot_state": bot_state,
-        "trades": trades
+        "price": current_price,
+        "capital": current_capital,
+        "status": bot_status
     }
 
-# Routes pour les boutons Démarrer/Arrêter
-@app.get("/start")
+@app.post("/start")
 async def start_bot():
-    global bot_state
-    bot_state = "En cours"
-    # Ajoutez ici la logique pour lancer votre bot
+    global bot_running
+    bot_running = True
     return {"message": "Bot démarré"}
 
-@app.get("/stop")
+@app.post("/stop")
 async def stop_bot():
-    global bot_state
-    bot_state = "Arrêté"
-    # Ajoutez ici la logique pour stopper votre bot
+    global bot_running
+    bot_running = False
     return {"message": "Bot arrêté"}
-
-# --- VOTRE LOGIQUE DE TRADING (Boucle principale) ---
-# Vous pouvez continuer à mettre votre code de trading asynchrone ici
