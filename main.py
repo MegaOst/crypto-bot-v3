@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 app = FastAPI()
 
 # Indique que le fichier index.html se trouve dans le même dossier que main.py
-templates = Jinja2Templates(directory=".")
+templates = Jinja2Templates(directory="templates")
 
 # --- VARIABLES GLOBALES ---
 current_price = 0.00
