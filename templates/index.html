@@ -55,52 +55,57 @@
     </div>
 
     <script>
-        // Fonction pour démarrer ou arrêter le bot
-        async function actionBot(endpoint) {
-            try {
-                await fetch(endpoint);
-                fetchStats(); // Met à jour l'interface immédiatement
-            } catch (error) {
-                console.error("Erreur d'action :", error);
-            }
+    // Met à jour les statistiques toutes les 2 secondes
+    async function fetchStats() {
+        try {
+            const response = await fetch('/stats');
+            const data = await response.json();
+            
+            // Mise à jour des textes
+            document.getElementById('price').innerText = data.price.toFixed(2) + ' $';
+            document.getElementById('capital').innerText = data.capital.toFixed(2) + ' $';
+            document.getElementById('status').innerText = data.status;
+            
+        } catch (error) {
+            console.error("Erreur lors de la récupération des stats :", error);
         }
+    }
 
-        // Fonction pour récupérer les données du serveur
-        async function fetchStats() {
-            try {
-                const response = await fetch('/stats');
-                const data = await response.json();
-
-                document.getElementById('current-price').innerText = data.current_price.toFixed(2);
-                document.getElementById('current-capital').innerText = data.current_capital.toFixed(2);
-                document.getElementById('bot-state').innerText = data.bot_state;
-
-                const tradesList = document.getElementById('trades-list');
-                tradesList.innerHTML = '';
-
-                // On ne garde que les 50 premiers éléments de la liste pour l'affichage
-                let tradesAAfficher = data.trades.slice(0, 50);
-
-                tradesAAfficher.forEach(trade => {
-                    let perfClass = trade.performance >= 0 ? "profit" : "loss";
-                    let row = `<tr>
-                        <td>${trade.date}</td>
-                        <td>${trade.buy_price ? trade.buy_price.toFixed(2) + ' $' : '-'}</td>
-                        <td>${trade.sell_price ? trade.sell_price.toFixed(2) + ' $' : '-'}</td>
-                        <td class="${perfClass}">${trade.performance ? trade.performance.toFixed(2) + ' %' : '-'}</td>
-                        <td>${trade.status}</td>
-                    </tr>`;
-                    tradesList.innerHTML += row;
-                });
-            } catch (error) {
-                console.error("Erreur de récupération des données :", error);
-            }
+    // Fonction pour démarrer le bot (avec POST)
+    async function startBot() {
+        try {
+            const response = await fetch('/start', { 
+                method: 'POST' // <-- C'est ici la correction !
+            });
+            const data = await response.json();
+            console.log(data.message);
+            fetchStats(); // Met à jour l'interface immédiatement
+        } catch (error) {
+            console.error("Erreur lors du démarrage :", error);
         }
+    }
 
-        // Met à jour les données toutes les 5 secondes
-        setInterval(fetchStats, 5000);
-        fetchStats(); // Premier appel au chargement de la page
-    </script>
+    // Fonction pour arrêter le bot (avec POST)
+    async function stopBot() {
+        try {
+            const response = await fetch('/stop', { 
+                method: 'POST' // <-- C'est ici la correction !
+            });
+            const data = await response.json();
+            console.log(data.message);
+            fetchStats(); // Met à jour l'interface immédiatement
+        } catch (error) {
+            console.error("Erreur lors de l'arrêt :", error);
+        }
+    }
+
+    // Lancer la mise à jour automatique toutes les 2 secondes (2000 ms)
+    setInterval(fetchStats, 2000);
+    
+    // Charger les stats une première fois dès l'ouverture de la page
+    fetchStats();
+</script>
+
 
 </body>
 </html>
