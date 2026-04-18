@@ -188,7 +188,7 @@ async def read_root(request: Request):
             raise HTTPException(status_code=500, detail="Erreur serveur interne critique.")
 
 # --- Routes API ---
-@app.get("/api/stats")
+@app.get("/stats")  # <-- ON RETIRE LE "/api" ICI
 async def api_stats():
     return {
         "current_price": current_price,
