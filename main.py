@@ -197,7 +197,7 @@ async def api_stats():
         "trades_history": get_trades(limit=100)
     }
 
-@app.post("/api/start_bot")
+@app.post("/start")
 async def start_bot_api():
     global bot_running
     if not bot_running:
@@ -206,7 +206,7 @@ async def start_bot_api():
     else:
         raise HTTPException(status_code=400, detail="Le bot est déjà en cours d'exécution.")
 
-@app.post("/api/stop_bot")
+@app.post("/stop")
 async def stop_bot_api():
     global bot_running
     if bot_running:
