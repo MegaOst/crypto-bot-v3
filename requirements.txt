@@ -1,8 +1,8 @@
 fastapi
 uvicorn
-jinja2
-aiohttp
 ccxt
 pandas
 pydantic
+jinja2
 httpx
+aiohttp
