@@ -56,13 +56,13 @@
     </div>
 
     <script>
-        // Met à jour les statistiques et l'historique toutes les 2 secondes
+    // Met à jour les statistiques et l'historique toutes les 2 secondes
     async function fetchAndUpdateStats() { 
         try {
             const response = await fetch('/stats');
             const data = await response.json();
             
-            // CORRECTION ICI : on utilise les bons noms envoyés par main.py
+            // On utilise les bons noms envoyés par main.py
             document.getElementById('current-price').innerText = data.current_price.toFixed(2) + ' $';
             document.getElementById('current-capital').innerText = data.current_capital.toFixed(2) + ' $';
             document.getElementById('bot-state').innerText = data.bot_status; 
@@ -71,7 +71,7 @@
             const tradesList = document.getElementById('trades-list');
             tradesList.innerHTML = ''; // Vide la liste actuelle avant de la remplir
 
-            // CORRECTION ICI : data.trades_history au lieu de data.trades
+            // Historique des trades
             data.trades_history.forEach(trade => {
                 const row = tradesList.insertRow();
                 const dateCell = row.insertCell(0);
@@ -93,6 +93,33 @@
         }
     }
 
+    // Fonction pour démarrer le bot
+    async function startBot() {
+        try {
+            const response = await fetch('/start', { 
+                method: 'POST' 
+            });
+            const data = await response.json();
+            console.log(data.message);
+            fetchAndUpdateStats(); // Met à jour l'interface immédiatement
+        } catch (error) {
+            console.error("Erreur lors du démarrage :", error);
+        }
+    }
+
+    // Fonction pour arrêter le bot
+    async function stopBot() {
+        try {
+            const response = await fetch('/stop', { 
+                method: 'POST' 
+            });
+            const data = await response.json();
+            console.log(data.message);
+            fetchAndUpdateStats(); // Met à jour l'interface immédiatement
+        } catch (error) {
+            console.error("Erreur lors de l'arrêt :", error);
+        }
+    }
 
     // Lancer la mise à jour automatique toutes les 2 secondes (2000 ms)
     setInterval(fetchAndUpdateStats, 2000);
@@ -100,6 +127,7 @@
     // Charger les stats une première fois dès l'ouverture de la page
     fetchAndUpdateStats();
 </script>
+
 
 
 </body>
