@@ -1,7 +1,7 @@
 import asyncio
 import sqlite3
 import os
-import ccxt.async_support as ccxt
+import aiohttp
 import logging
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
@@ -93,27 +93,49 @@ current_capital = 1000.00
 bot_status = "Arrêté"
 trade_history_memory = []
 
-# --- Logique du Bot (Exemple/Structure) ---
+# --- Logique du Bot ---
 async def run_bot_logic():
     global bot_running, current_price, current_capital, bot_status
     bot_status = "En cours d'exécution"
+    logger.info(f"Bot démarré. Utilisation de CoinGecko (Vérification toutes les 5 min).")
+    
     try:
-        exchange = ccxt.binance()
         while bot_running:
             try:
-                ticker = await exchange.fetch_ticker('BTC/USDT')
-                current_price = ticker['last']
+                # Appel à l'API de CoinGecko
+                url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            current_price = data['bitcoin']['usd']
+                            logger.info(f"Prix actuel du BTC (CoinGecko) : {current_price} $")
+                        else:
+                            logger.error(f"Erreur API CoinGecko : HTTP {response.status}")
+                
                 # ---> Placez votre logique de stratégie de trading ici <---
-                await asyncio.sleep(5)
+                
+                # Pause de 5 minutes (300 secondes) 
+                # On utilise une boucle de 1s pour pouvoir stopper le bot immédiatement sans attendre les 5 minutes complètes
+                for _ in range(300):
+                    if not bot_running:
+                        break
+                    await asyncio.sleep(1)
+                    
             except Exception as e:
                 logger.error(f"Erreur dans la boucle du bot : {e}")
-                await asyncio.sleep(5)
-        await exchange.close()
+                # En cas d'erreur de connexion, on attend 60 secondes avant de réessayer
+                for _ in range(60):
+                    if not bot_running:
+                        break
+                    await asyncio.sleep(1)
+                    
     except Exception as e:
         logger.error(f"Erreur critique du bot : {e}")
     finally:
         bot_status = "Arrêté"
         bot_running = False
+        logger.info("La boucle du bot s'est arrêtée.")
 
 def start_bot():
     global bot_running, bot_task
@@ -188,7 +210,7 @@ async def read_root(request: Request):
             raise HTTPException(status_code=500, detail="Erreur serveur interne critique.")
 
 # --- Routes API ---
-@app.get("/stats")  # <-- ON RETIRE LE "/api" ICI
+@app.get("/stats")
 async def api_stats():
     return {
         "current_price": current_price,
