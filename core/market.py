@@ -1,67 +1,87 @@
-import requests
+import httpx # Assurez-vous que httpx est installé: pip install httpx
+import os
 import logging
 
 logger = logging.getLogger(__name__)
 
-class MarketFetcher:
-    def __init__(self):
-        self.coingecko_api_url = "https://api.coingecko.com/api/v3/simple/price"
-        logger.info("MarketFetcher initialisé avec l'API CoinGecko.")
+# --- Récupération de la clé API ---
+# Essayer de récupérer la clé API depuis les variables d'environnement
+COINGECKO_API_KEY = os.environ.get('COINGECKO_API_KEY')
+if COINGECKO_API_KEY:
+    logger.info("Clé API CoinGecko trouvée. Utilisation de l'API authentifiée.")
+else:
+    # Si pas de clé, on log un warning et on s'assure que les appels respectent les limites publiques
+    logger.warning("Clé API CoinGecko non trouvée. Utilisation de l'API publique gratuite. Les limites de taux peuvent s'appliquer.")
 
-    def get_current_price(self, symbol):
-        """
-        Récupère le prix actuel d'un symbole (e.g., 'bitcoin') en USDT depuis CoinGecko.
-        Retourne le prix en float ou None en cas d'erreur.
-        """
-        if '/' in symbol:
-            base_coin, quote_coin = symbol.split('/')
-            if quote_coin.lower() != 'usdt':
-                logger.warning(f"Seul USDT est supporté pour la conversion. Le symbole {symbol} sera traité comme base_coin.")
-                # Dans ce cas, on cherche le prix de base_coin en USD (qui est généralement USDT)
-            
-            # CoinGecko attend les IDs des cryptos, pas les symboles comme BTC/USDT
-            # Il faut mapper les symboles courants aux IDs CoinGecko
-            coin_id_map = {
-                "BTC": "bitcoin",
-                "ETH": "ethereum",
-                # Ajoutez d'autres cryptos ici si nécessaire
-            }
-            
-            target_id = coin_id_map.get(base_coin.upper())
-            if not target_id:
-                logger.error(f"L'ID CoinGecko pour le symbole {base_coin} n'est pas défini.")
-                return None
+# --- Configuration de l'URL de base pour CoinGecko ---
+# La plupart des endpoints de l'API CoinGecko sont sur la même base
+COINGECKO_API_URL = "https://api.coingecko.com/api/v3"
 
-            params = {
-                'ids': target_id,
-                'vs_currencies': 'usd'
-            }
-            
-            try:
-                response = requests.get(self.coingecko_api_url, params=params, timeout=10) # Ajout d'un timeout
-                response.raise_for_status() # Lève une exception pour les codes d'erreur HTTP (4xx, 5xx)
-                data = response.json()
-                
-                price = data.get(target_id, {}).get('usd')
-                if price is not None:
-                    return float(price)
-                else:
-                    logger.error(f"Prix non trouvé dans la réponse CoinGecko pour {target_id}.")
-                    return None
-                    
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Erreur de requête API CoinGecko : {e}")
-                return None
-            except ValueError: # Si la réponse n'est pas du JSON valide
-                logger.error("Réponse invalide reçue de l'API CoinGecko (pas du JSON).")
-                return None
-            except Exception as e:
-                logger.error(f"Erreur inconnue lors de la récupération du prix : {type(e).__name__} - {e}")
-                return None
+async def get_current_price(coin_id: str = "bitcoin", vs_currency: str = "usd") -> float | None:
+    """
+    Récupère le prix actuel d'une crypto-monnaie par rapport à une autre devise depuis CoinGecko.
+    Utilise la clé API si disponible.
+    """
+    # --- Construction de l'URL de l'endpoint ---
+    # Endpoint pour obtenir le prix simple
+    endpoint = f"/simple/price"
+    params = {
+        "ids": coin_id,
+        "vs_currencies": vs_currency,
+    }
+
+    headers = {}
+    # --- Ajout de la clé API dans les headers si elle existe ---
+    if COINGECKO_API_KEY:
+        # Selon la documentation CoinGecko, la clé API est envoyée dans le header 'x-cg-demo-api-key'
+        # ou un header similaire selon le plan. Pour les plans payants, c'est souvent
+        # 'x-api-key' ou via un paramètre 'x_cg_api_key'. 
+        # Vérifiez la documentation de VOTRE plan CoinGecko API.
+        # L'exemple ci-dessous utilise 'x-cg-demo-api-key' comme dans les démos CoinGecko,
+        # mais il est très probable que vous deviez utiliser 'x-api-key' ou similaire pour un plan payant.
+        # FAITES CETTE VÉRIFICATION : https://www.coingecko.com/en/api/documentation
+        
+        # Exemple d'utilisation d'une clé API (adaptez le nom du header si nécessaire)
+        # Pour un plan standard ou pro, le header est souvent 'x-api-key'
+        headers['x-api-key'] = COINGECKO_API_KEY 
+        # Si votre plan utilise un autre nom de header ou un paramètre, adaptez ici.
+        # Par exemple, pour certains plans, ce serait : params['x_cg_api_key'] = COINGECKO_API_KEY
+
+    try:
+        # Utilisation de httpx pour faire la requête asynchrone
+        async with httpx.AsyncClient(headers=headers) as client:
+            response = await client.get(f"{COINGECKO_API_URL}{endpoint}", params=params)
+            response.raise_for_status()  # Lève une exception pour les codes d'erreur HTTP (4xx ou 5xx)
+
+        data = response.json()
+
+        # --- Extraction du prix ---
+        price = data.get(coin_id, {}).get(vs_currency)
+
+        if price is not None:
+            logger.debug(f"Prix récupéré pour {coin_id}/{vs_currency}: {price}")
+            return float(price)
         else:
-            logger.error(f"Format de symbole invalide : {symbol}. Attendu 'BTC/USDT'.")
+            logger.warning(f"Impossible de trouver le prix pour {coin_id}/{vs_currency} dans la réponse : {data}")
             return None
 
-# --- Création d'une instance globale de MarketFetcher ---
-# Cette instance sera importée par main.py
-market_fetcher = MarketFetcher()
+    except httpx.HTTPStatusError as e:
+        # Si la réponse est un 429 (Too Many Requests)
+        if e.response.status_code == 429:
+            logger.error(f"Erreur de requête API CoinGecko : Trop de requêtes (429). URL: {e.request.url}")
+            # Ici, vous pouvez implémenter une logique de retry plus avancée si besoin
+            # Si une clé API est configurée, cela signifie qu'elle est peut-être limitée aussi, 
+            # ou que vous dépassez même les limites du plan.
+            # Si pas de clé API, c'est la limite de l'API publique.
+        else:
+            logger.error(f"Erreur de requête API CoinGecko : {e.response.status_code} {e.response.reason_phrase} for url: {e.request.url}")
+        return None
+    except httpx.RequestError as e:
+        logger.error(f"Erreur de requête réseau vers CoinGecko : {e} for url: {e.request.url}")
+        return None
+    except Exception as e:
+        logger.error(f"Erreur inattendue lors de la récupération du prix CoinGecko : {e}")
+        return None
+
+# --- Assurez-vous que d'autres parties de votre code qui appellent cette fonction
+# --- sont préparées à recevoir `None` et à gérer les délais en conséquence. ---
