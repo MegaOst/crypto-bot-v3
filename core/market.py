@@ -1,87 +1,56 @@
-import httpx # Assurez-vous que httpx est installé: pip install httpx
-import os
+import ccxt.async_support as ccxt
 import logging
 
 logger = logging.getLogger(__name__)
 
-# --- Récupération de la clé API ---
-# Essayer de récupérer la clé API depuis les variables d'environnement
-COINGECKO_API_KEY = os.environ.get('COINGECKO_API_KEY')
-if COINGECKO_API_KEY:
-    logger.info("Clé API CoinGecko trouvée. Utilisation de l'API authentifiée.")
-else:
-    # Si pas de clé, on log un warning et on s'assure que les appels respectent les limites publiques
-    logger.warning("Clé API CoinGecko non trouvée. Utilisation de l'API publique gratuite. Les limites de taux peuvent s'appliquer.")
+# --- Initialisation de l'échange ---
+# Vous pouvez choisir l'échange que vous préférez (e.g., 'binance', 'kraken', etc.)
+# Assurez-vous que l'échange est supporté par ccxt
+exchange_id = 'binance'
+exchange_class = getattr(ccxt, exchange_id)
+exchange = exchange_class()
 
-# --- Configuration de l'URL de base pour CoinGecko ---
-# La plupart des endpoints de l'API CoinGecko sont sur la même base
-COINGECKO_API_URL = "https://api.coingecko.com/api/v3"
-
-async def get_current_price(coin_id: str = "bitcoin", vs_currency: str = "usd") -> float | None:
+async def get_current_price(symbol: str):
     """
-    Récupère le prix actuel d'une crypto-monnaie par rapport à une autre devise depuis CoinGecko.
-    Utilise la clé API si disponible.
+    Récupère le dernier prix d'une paire de trading sur l'échange spécifié.
+    :param symbol: La paire de trading (ex: 'BTC/USDT').
+    :return: Un dictionnaire contenant le dernier prix, ou None en cas d'erreur.
     """
-    # --- Construction de l'URL de l'endpoint ---
-    # Endpoint pour obtenir le prix simple
-    endpoint = f"/simple/price"
-    params = {
-        "ids": coin_id,
-        "vs_currencies": vs_currency,
-    }
-
-    headers = {}
-    # --- Ajout de la clé API dans les headers si elle existe ---
-    if COINGECKO_API_KEY:
-        # Selon la documentation CoinGecko, la clé API est envoyée dans le header 'x-cg-demo-api-key'
-        # ou un header similaire selon le plan. Pour les plans payants, c'est souvent
-        # 'x-api-key' ou via un paramètre 'x_cg_api_key'. 
-        # Vérifiez la documentation de VOTRE plan CoinGecko API.
-        # L'exemple ci-dessous utilise 'x-cg-demo-api-key' comme dans les démos CoinGecko,
-        # mais il est très probable que vous deviez utiliser 'x-api-key' ou similaire pour un plan payant.
-        # FAITES CETTE VÉRIFICATION : https://www.coingecko.com/en/api/documentation
-        
-        # Exemple d'utilisation d'une clé API (adaptez le nom du header si nécessaire)
-        # Pour un plan standard ou pro, le header est souvent 'x-api-key'
-        headers['x-api-key'] = COINGECKO_API_KEY 
-        # Si votre plan utilise un autre nom de header ou un paramètre, adaptez ici.
-        # Par exemple, pour certains plans, ce serait : params['x_cg_api_key'] = COINGECKO_API_KEY
-
+    logger.info(f"Tentative de récupération du prix pour {symbol} sur {exchange_id}...")
     try:
-        # Utilisation de httpx pour faire la requête asynchrone
-        async with httpx.AsyncClient(headers=headers) as client:
-            response = await client.get(f"{COINGECKO_API_URL}{endpoint}", params=params)
-            response.raise_for_status()  # Lève une exception pour les codes d'erreur HTTP (4xx ou 5xx)
-
-        data = response.json()
-
-        # --- Extraction du prix ---
-        price = data.get(coin_id, {}).get(vs_currency)
-
-        if price is not None:
-            logger.debug(f"Prix récupéré pour {coin_id}/{vs_currency}: {price}")
-            return float(price)
-        else:
-            logger.warning(f"Impossible de trouver le prix pour {coin_id}/{vs_currency} dans la réponse : {data}")
-            return None
-
-    except httpx.HTTPStatusError as e:
-        # Si la réponse est un 429 (Too Many Requests)
-        if e.response.status_code == 429:
-            logger.error(f"Erreur de requête API CoinGecko : Trop de requêtes (429). URL: {e.request.url}")
-            # Ici, vous pouvez implémenter une logique de retry plus avancée si besoin
-            # Si une clé API est configurée, cela signifie qu'elle est peut-être limitée aussi, 
-            # ou que vous dépassez même les limites du plan.
-            # Si pas de clé API, c'est la limite de l'API publique.
-        else:
-            logger.error(f"Erreur de requête API CoinGecko : {e.response.status_code} {e.response.reason_phrase} for url: {e.request.url}")
+        # Exemple: 'BTC/USDT'
+        ticker = await exchange.fetch_ticker(symbol)
+        logger.debug(f"Ticker pour {symbol}: {ticker}")
+        # La clé 'last' contient généralement le dernier prix de transaction
+        return {"symbol": symbol, "last": ticker.get('last')}
+    except ccxt.NetworkError as e:
+        logger.error(f"Erreur réseau CCXT lors de la récupération du prix pour {symbol}: {e}")
         return None
-    except httpx.RequestError as e:
-        logger.error(f"Erreur de requête réseau vers CoinGecko : {e} for url: {e.request.url}")
+    except ccxt.ExchangeError as e:
+        logger.error(f"Erreur d'échange CCXT lors de la récupération du prix pour {symbol}: {e}")
         return None
     except Exception as e:
-        logger.error(f"Erreur inattendue lors de la récupération du prix CoinGecko : {e}")
+        logger.error(f"Erreur inattendue lors de la récupération du prix pour {symbol}: {e}", exc_info=True)
         return None
+    finally:
+        # Il est bon de fermer la connexion si vous ne réutilisez pas l'instance de manière persistante
+        # Cependant, pour un serveur d'application qui tourne longtemps, la garder ouverte est souvent mieux
+        # Si vous rencontrez des problèmes de connexion, une fermeture et réouverture pourrait aider
+        # await exchange.close() # Décommenter si nécessaire
+        pass
 
-# --- Assurez-vous que d'autres parties de votre code qui appellent cette fonction
-# --- sont préparées à recevoir `None` et à gérer les délais en conséquence. ---
+# Assurez-vous de fermer l'échange proprement à la fin de l'application si elle est gérée par vous
+# Si uvicorn gère le cycle de vie, cela peut ne pas être nécessaire ici directement
+# async def close_exchange():
+#     await exchange.close()
+
+# Pour tester localement :
+# async def main():
+#     price_data = await get_current_price("BTC/USDT")
+#     if price_data:
+#         print(f"Le dernier prix de BTC/USDT est : {price_data['last']}")
+#     else:
+#         print("Impossible de récupérer le prix.")
+
+# if __name__ == "__main__":
+#     asyncio.run(main())
