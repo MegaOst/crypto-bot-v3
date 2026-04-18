@@ -9,7 +9,7 @@ import logging
 # --- Configuration du Logging ---
 # Utilise un format plus détaillé pour les logs
 LOG_FORMAT = '%(asctime)s - %(levelname)s - %(name)s - %(message)s'
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT) # Niveau INFO par défaut, DEBUG pour plus de détails
+logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT)# Niveau INFO par défaut, DEBUG pour plus de détails
 logger = logging.getLogger(__name__) # Nom du logger
 
 app = FastAPI()
