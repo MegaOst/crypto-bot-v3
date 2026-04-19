@@ -5,17 +5,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard Trading Bot</title>
     <style>
-        body { font-family: Arial, sans-serif; background-color: #f4f4f9; padding: 20px; }
-        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0px 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        .btn { padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; color: white; margin-right: 10px;}
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5; padding: 20px; color: #333; }
+        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0px 4px 12px rgba(0,0,0,0.08); margin-bottom: 20px; }
+        h1 { color: #1a73e8; }
+        h2 { margin-top: 0; color: #5f6368; font-size: 1.2rem; }
+        
+        .btn { padding: 12px 24px; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; color: white; transition: opacity 0.2s; }
         .btn-start { background-color: #28a745; }
         .btn-stop { background-color: #dc3545; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
-        .profit { color: green; font-weight: bold; }
-        .loss { color: red; font-weight: bold; }
-        .trade-status-ACHAT { color: green; }
-        .trade-status-VENTE { color: red; }
+        .btn:hover { opacity: 0.8; }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; background: white; }
+        th { background-color: #f8f9fa; padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6; color: #70757a; }
+        td { padding: 12px; border-bottom: 1px solid #eee; }
+        
+        /* Couleurs pour les actions et profits */
+        .status-running { color: #28a745; font-weight: bold; }
+        .status-stopped { color: #dc3545; font-weight: bold; }
+        
+        .type-BUY { color: #28a745; font-weight: bold; }
+        .type-SELL { color: #dc3545; font-weight: bold; }
+        
+        .profit-positive { color: #28a745; font-weight: bold; }
+        .profit-negative { color: #dc3545; font-weight: bold; }
+        .no-profit { color: #999; }
     </style>
 </head>
 <body>
@@ -24,111 +37,125 @@
 
     <!-- Contrôles du Bot -->
     <div class="card">
-        <h2>Contrôle</h2>
-        <p>Statut actuel : <strong id="bot-state">Chargement...</strong></p>
-        <button class="btn btn-start" onclick="startBot()">Démarrer</button>
-        <button class="btn btn-stop" onclick="stopBot()">Arrêter</button>
+        <h2>Contrôle du Bot</h2>
+        <p>Statut actuel : <span id="bot-state">Chargement...</span></p>
+        <button class="btn btn-start" onclick="startBot()">Démarrer le Bot</button>
+        <button class="btn btn-stop" onclick="stopBot()">Arrêter le Bot</button>
     </div>
 
     <!-- Statistiques -->
     <div class="card">
         <h2>Statistiques en direct</h2>
-        <p>Prix actuel de la crypto : <strong id="current-price">0.00</strong> $</p>
-        <p>Capital actuel : <strong id="current-capital">0.00</strong> $</p>
+        <div style="display: flex; gap: 40px;">
+            <div>
+                <p style="margin: 0; color: #70757a;">Prix actuel BTC</p>
+                <strong id="current-price" style="font-size: 1.5rem;">0.00 $</strong>
+            </div>
+            <div>
+                <p style="margin: 0; color: #70757a;">Capital (USDT)</p>
+                <strong id="current-capital" style="font-size: 1.5rem;">0.00 $</strong>
+            </div>
+        </div>
     </div>
 
     <!-- Historique des Trades -->
     <div class="card">
-        <h2>Historique des Trades (50 derniers)</h2>
+        <h2>Historique des Trades</h2>
         <table>
             <thead>
                 <tr>
-                    <th>Date</th>
-                    <th>Action</th>
-                    <th>Prix</th>
-                    <th>Performance</th>
+                    <th>Date & Heure</th>
+                    <th>Type</th>
+                    <th>Symbole</th>
+                    <th>Prix d'Entrée</th>
+                    <th>Montant</th>
+                    <th>Profit</th>
                 </tr>
             </thead>
             <tbody id="trades-list">
-                <!-- Les trades s'afficheront ici -->
+                <!-- Rempli par JavaScript -->
             </tbody>
         </table>
     </div>
 
     <script>
-    // Met à jour les statistiques et l'historique toutes les 2 secondes
     async function fetchAndUpdateStats() { 
         try {
             const response = await fetch('/stats');
+            if (!response.ok) throw new Error('Erreur réseau');
             const data = await response.json();
             
-            // On utilise les bons noms envoyés par main.py
-            document.getElementById('current-price').innerText = data.current_price.toFixed(2) + ' $';
+            // Mise à jour des compteurs
+            document.getElementById('current-price').innerText = data.current_price.toLocaleString() + ' $';
             document.getElementById('current-capital').innerText = data.current_capital.toFixed(2) + ' $';
-            document.getElementById('bot-state').innerText = data.bot_status; 
             
+            const stateEl = document.getElementById('bot-state');
+            stateEl.innerText = data.bot_status;
+            stateEl.className = data.bot_status === "En cours d'exécution" ? "status-running" : "status-stopped";
+
             // Mise à jour de la liste des trades
             const tradesList = document.getElementById('trades-list');
-            tradesList.innerHTML = ''; // Vide la liste actuelle avant de la remplir
+            tradesList.innerHTML = ''; 
 
-            // Historique des trades
             data.trades_history.forEach(trade => {
                 const row = tradesList.insertRow();
-                const dateCell = row.insertCell(0);
-                const actionCell = row.insertCell(1);
-                const priceCell = row.insertCell(2);
-                const performanceCell = row.insertCell(3);
+                
+                // Formater la date (timestamp envoyé par Python)
+                const dateTrade = new Date(trade.timestamp).toLocaleString('fr-FR');
+                
+                // Cellule Date
+                row.insertCell(0).innerText = dateTrade;
+                
+                // Cellule Type (BUY/SELL)
+                const typeCell = row.insertCell(1);
+                typeCell.innerText = trade.type;
+                typeCell.className = `type-${trade.type}`;
 
-                dateCell.innerText = new Date(trade.date).toLocaleString(); 
-                actionCell.innerText = trade.action;
-                actionCell.className = `trade-status-${trade.action}`; 
-                priceCell.innerText = trade.price.toFixed(2) + ' $';
+                // Cellule Symbole
+                row.insertCell(2).innerText = trade.symbol;
 
-                performanceCell.innerText = "-"; 
+                // Cellule Prix
+                row.insertCell(3).innerText = trade.entry_price.toLocaleString() + ' $';
+
+                // Cellule Montant
+                row.insertCell(4).innerText = trade.amount.toFixed(5);
+
+                // Cellule Profit
+                const profitCell = row.insertCell(5);
+                if (trade.type === 'SELL' && trade.profit !== null) {
+                    const profitValue = trade.profit.toFixed(2);
+                    profitCell.innerText = profitValue + ' $';
+                    profitCell.className = trade.profit >= 0 ? 'profit-positive' : 'profit-negative';
+                } else {
+                    profitCell.innerText = "-";
+                    profitCell.className = 'no-profit';
+                }
             });
             
         } catch (error) {
-            console.error("Erreur lors de la récupération des stats et trades :", error);
-            document.getElementById('bot-state').innerText = "Erreur de connexion"; 
+            console.error("Erreur dashboard :", error);
+            document.getElementById('bot-state').innerText = "Erreur de connexion au serveur";
         }
     }
 
-    // Fonction pour démarrer le bot
     async function startBot() {
         try {
-            const response = await fetch('/start', { 
-                method: 'POST' 
-            });
-            const data = await response.json();
-            console.log(data.message);
-            fetchAndUpdateStats(); // Met à jour l'interface immédiatement
-        } catch (error) {
-            console.error("Erreur lors du démarrage :", error);
-        }
+            await fetch('/start', { method: 'POST' });
+            fetchAndUpdateStats();
+        } catch (e) { console.error(e); }
     }
 
-    // Fonction pour arrêter le bot
     async function stopBot() {
         try {
-            const response = await fetch('/stop', { 
-                method: 'POST' 
-            });
-            const data = await response.json();
-            console.log(data.message);
-            fetchAndUpdateStats(); // Met à jour l'interface immédiatement
-        } catch (error) {
-            console.error("Erreur lors de l'arrêt :", error);
-        }
+            await fetch('/stop', { method: 'POST' });
+            fetchAndUpdateStats();
+        } catch (e) { console.error(e); }
     }
 
-    // Lancer la mise à jour automatique toutes les 2 secondes (2000 ms)
+    // Rafraîchir toutes les 2 secondes
     setInterval(fetchAndUpdateStats, 2000);
-    
-    // Charger les stats une première fois dès l'ouverture de la page
     fetchAndUpdateStats();
-</script>
-
-
+    </script>
 
 </body>
 </html>
