@@ -40,9 +40,8 @@ def initialize_database():
         logger.info(f"Base de données '{DATABASE_NAME}' et table '{TRADES_TABLE}' prêtes.")
     except Exception as e:
         logger.error(f"Erreur lors de l'initialisation de la base de données : {e}")
-        exit(1) # On arrête le script si la DB ne peut pas s'initialiser
+        exit(1)
 
-# INITIALISATION IMMEDIATE DE LA DB (Avant même de configurer FastAPI)
 initialize_database()
 
 def get_trades(limit=50):
@@ -82,6 +81,7 @@ def add_trade(trade_data):
         ))
         conn.commit()
         conn.close()
+        logger.info(f"Nouveau trade ajouté en base : {trade_data['type']} à {trade_data.get('entry_price', trade_data.get('exit_price'))}$")
     except Exception as e:
         logger.error(f"Erreur lors de l'ajout du trade en base : {e}")
 
@@ -90,33 +90,83 @@ bot_running = False
 bot_task = None
 current_price = 0.0
 current_capital = 1000.00
+crypto_held = 0.0 # Ajout d'une variable pour savoir si on possède de la crypto
+last_buy_price = 0.0 # Pour calculer le profit à la vente
 bot_status = "Arrêté"
 trade_history_memory = []
 
 # --- Logique du Bot ---
 async def run_bot_logic():
-    global bot_running, current_price, current_capital, bot_status
+    global bot_running, current_price, current_capital, bot_status, crypto_held, last_buy_price
     bot_status = "En cours d'exécution"
-    logger.info(f"Bot démarré. Utilisation de CoinGecko (Vérification toutes les 5 min).")
+    logger.info(f"Bot démarré. Vérification du marché...")
     
     try:
         while bot_running:
             try:
-                # Appel à l'API de CoinGecko
+                # 1. Appel API CoinGecko
                 url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url) as response:
                         if response.status == 200:
                             data = await response.json()
                             current_price = data['bitcoin']['usd']
-                            logger.info(f"Prix actuel du BTC (CoinGecko) : {current_price} $")
+                            logger.info(f"[ANALYSE] Prix actuel du BTC : {current_price} $ | Capital : {current_capital:.2f} $ | Crypto possédée : {crypto_held:.5f} BTC")
                         else:
                             logger.error(f"Erreur API CoinGecko : HTTP {response.status}")
                 
-                # ---> Placez votre logique de stratégie de trading ici <---
-                
+                # 2. ---> LOGIQUE DE STRATÉGIE DE TEST <---
+                # Attention : Ceci est une stratégie fictive pour vérifier que l'enregistrement des trades fonctionne.
+                if current_price > 0:
+                    
+                    # CONDITION D'ACHAT (Si on a tout en capital USD)
+                    if current_capital >= 10: # On achète si on a au moins 10$
+                        logger.info(">>> SIGNAL D'ACHAT DÉTECTÉ <<<")
+                        amount_to_buy = current_capital / current_price
+                        
+                        trade_data = {
+                            'timestamp': datetime.now().isoformat(),
+                            'type': 'BUY',
+                            'symbol': 'BTC/USD',
+                            'entry_price': current_price,
+                            'exit_price': 0.0,
+                            'amount': amount_to_buy,
+                            'profit': 0.0,
+                            'status': 'open'
+                        }
+                        add_trade(trade_data)
+                        
+                        # Mise à jour du portefeuille
+                        crypto_held = amount_to_buy
+                        current_capital = 0.0
+                        last_buy_price = current_price
+                        logger.info(f"Achat effectué. Nouveau solde crypto : {crypto_held:.5f} BTC")
+                        
+                    # CONDITION DE VENTE (Si on possède de la crypto)
+                    elif crypto_held > 0:
+                        logger.info(">>> SIGNAL DE VENTE DÉTECTÉ <<<")
+                        profit = (current_price - last_buy_price) * crypto_held
+                        
+                        trade_data = {
+                            'timestamp': datetime.now().isoformat(),
+                            'type': 'SELL',
+                            'symbol': 'BTC/USD',
+                            'entry_price': last_buy_price,
+                            'exit_price': current_price,
+                            'amount': crypto_held,
+                            'profit': profit,
+                            'status': 'closed'
+                        }
+                        add_trade(trade_data)
+                        
+                        # Mise à jour du portefeuille
+                        current_capital = crypto_held * current_price
+                        crypto_held = 0.0
+                        logger.info(f"Vente effectuée. Profit : {profit:.2f} $. Nouveau capital : {current_capital:.2f} $")
+
                 # Pause de 5 minutes (300 secondes) 
-                # On utilise une boucle de 1s pour pouvoir stopper le bot immédiatement sans attendre les 5 minutes complètes
+                # (Vous pouvez descendre à 30 secondes pour voir les trades plus vite si vous testez)
+                logger.info("Attente de 5 minutes avant la prochaine analyse...")
                 for _ in range(300):
                     if not bot_running:
                         break
@@ -124,7 +174,6 @@ async def run_bot_logic():
                     
             except Exception as e:
                 logger.error(f"Erreur dans la boucle du bot : {e}")
-                # En cas d'erreur de connexion, on attend 60 secondes avant de réessayer
                 for _ in range(60):
                     if not bot_running:
                         break
@@ -150,7 +199,6 @@ def stop_bot():
 # --- Application FastAPI ---
 app = FastAPI()
 
-# Configuration des dossiers (assure qu'ils existent pour éviter des crashs)
 if not os.path.exists("templates"):
     os.makedirs("templates")
 if not os.path.exists("static"):
@@ -162,24 +210,18 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # --- Routes Web ---
 @app.get("/")
 async def read_root(request: Request):
-    logger.info("Requête reçue pour la page d'accueil.")
     try:
-        # Récupérer les trades depuis la DB
         db_trades = get_trades(limit=50)
-
-        # Combiner avec la mémoire en cours
         display_trades = list(db_trades)
         for mem_trade in trade_history_memory:
             if mem_trade not in display_trades and mem_trade.get('status') == 'open':
                 display_trades.append(mem_trade)
 
-        # Trier par date décroissante
         display_trades.sort(key=lambda x: str(x.get('timestamp', '0')), reverse=True)
         display_trades = display_trades[:50]
-
     except Exception as e:
-        logger.error(f"Erreur lors de la préparation des trades pour le dashboard : {e}", exc_info=True)
-        display_trades = [{"error": "Erreur de chargement des trades"}]
+        logger.error(f"Erreur chargement dashboard : {e}")
+        display_trades = []
 
     context = {
         "request": request,
@@ -190,24 +232,10 @@ async def read_root(request: Request):
     }
 
     try:
-        # CORRECTION DEFINITIVE : Utilisation des paramètres nommés (request=, name=, context=)
-        return templates.TemplateResponse(
-            request=request,
-            name="index.html",
-            context=context
-        )
+        return templates.TemplateResponse(request=request, name="index.html", context=context)
     except Exception as e:
-        logger.error(f"Erreur lors du rendu du template 'index.html' : {e}", exc_info=True)
-        try:
-            # CORRECTION DEFINITIVE POUR L'ERREUR AUSSI
-            return templates.TemplateResponse(
-                request=request,
-                name="error.html",
-                context={"request": request, "error_message": "Erreur interne du serveur lors du chargement du tableau de bord."}
-            )
-        except Exception as render_error:
-            logger.error(f"Impossible de rendre même le template d'erreur : {render_error}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Erreur serveur interne critique.")
+        logger.error(f"Erreur rendu HTML : {e}")
+        return {"error": "Erreur serveur"}
 
 # --- Routes API ---
 @app.get("/stats")
