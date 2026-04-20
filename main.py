@@ -1,177 +1,266 @@
 import asyncio
 import sqlite3
 import os
-import ccxt.async_support as ccxt
-import pandas as pd
+import aiohttp
 import logging
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 
-# --- CONFIGURATION ---
-DATABASE_NAME = "trading_bot.db"
-SYMBOL = "BTC/USDT"
-TIMEFRAME = "1m"
-TAKE_PROFIT = 0.002  # +0.2%
-STOP_LOSS = 0.001    # -0.1%
-TRADE_AMOUNT_USDT = 50
-
 # --- Configuration du Logger ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Initialisation Base de Données ---
+# --- Configuration des variables de base de données ---
+DATABASE_NAME = "trading_bot.db"
+TRADES_TABLE = "trades"
+
+# --- Fonctions de gestion de la base de données ---
 def initialize_database():
-    conn = sqlite3.connect(DATABASE_NAME)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            type TEXT,
-            symbol TEXT,
-            entry_price REAL,
-            exit_price REAL,
-            amount REAL,
-            profit REAL,
-            status TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    """Crée la base de données et la table des trades si elles n'existent pas."""
+    try:
+        conn = sqlite3.connect(DATABASE_NAME)
+        cursor = conn.cursor()
+        cursor.execute(f'''
+            CREATE TABLE IF NOT EXISTS {TRADES_TABLE} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                type TEXT,
+                symbol TEXT,
+                entry_price REAL,
+                exit_price REAL,
+                amount REAL,
+                profit REAL,
+                status TEXT
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        logger.info(f"Base de données '{DATABASE_NAME}' et table '{TRADES_TABLE}' prêtes.")
+    except Exception as e:
+        logger.error(f"Erreur lors de l'initialisation de la base de données : {e}")
+        exit(1)
 
 initialize_database()
 
-# --- Fonctions DB ---
 def get_trades(limit=50):
-    conn = sqlite3.connect(DATABASE_NAME)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?', (limit,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    try:
+        conn = sqlite3.connect(DATABASE_NAME)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(f'''
+            SELECT timestamp, type, symbol, entry_price, exit_price, amount, profit, status
+            FROM {TRADES_TABLE}
+            ORDER BY timestamp DESC
+            LIMIT ?
+        ''', (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Erreur SQLite lors de la récupération des trades : {e}")
+        return []
 
-def get_last_trade():
-    trades = get_trades(1)
-    return trades[0] if trades else None
+def add_trade(trade_data):
+    try:
+        conn = sqlite3.connect(DATABASE_NAME)
+        cursor = conn.cursor()
+        cursor.execute(f'''
+            INSERT INTO {TRADES_TABLE} (timestamp, type, symbol, entry_price, exit_price, amount, profit, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            trade_data.get('timestamp', datetime.now().isoformat()),
+            trade_data.get('type', ''),
+            trade_data.get('symbol', ''),
+            trade_data.get('entry_price', 0.0),
+            trade_data.get('exit_price', 0.0),
+            trade_data.get('amount', 0.0),
+            trade_data.get('profit', 0.0),
+            trade_data.get('status', 'closed')
+        ))
+        conn.commit()
+        conn.close()
+        logger.info(f"Nouveau trade ajouté en base : {trade_data['type']} à {trade_data.get('entry_price', trade_data.get('exit_price'))}$")
+    except Exception as e:
+        logger.error(f"Erreur lors de l'ajout du trade en base : {e}")
 
-def save_trade(trade_type, price, amount, profit=0):
-    conn = sqlite3.connect(DATABASE_NAME)
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO trades (timestamp, type, symbol, entry_price, exit_price, amount, profit, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (datetime.now().isoformat(), trade_type, SYMBOL, price, price if trade_type == 'SELL' else 0, amount, profit, 'closed'))
-    conn.commit()
-    conn.close()
-
-# --- Variables Globales pour le Dashboard ---
+# --- Variables Globales ---
 bot_running = False
+bot_task = None
 current_price = 0.0
-current_capital = 1000.0
+current_capital = 1000.00
+crypto_held = 0.0 # Ajout d'une variable pour savoir si on possède de la crypto
+last_buy_price = 0.0 # Pour calculer le profit à la vente
 bot_status = "Arrêté"
+trade_history_memory = []
 
-# --- LOGIQUE DU BOT (Le moteur) ---
+# --- Logique du Bot ---
 async def run_bot_logic():
-    global bot_running, current_price, bot_status, current_capital
+    global bot_running, current_price, current_capital, bot_status, crypto_held, last_buy_price
+    bot_status = "En cours d'exécution"
+    logger.info(f"Bot démarré. Vérification du marché...")
     
-    # Connexion à Binance
-    exchange = ccxt.binance({'enableRateLimit': True})
-    
-    while bot_running:
-        try:
-            bot_status = "Analyse en cours..."
-            # 1. Récupérer les bougies (OHLCV)
-            bars = await exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=10)
-            df = pd.DataFrame(bars, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
-            current_price = df['close'].iloc[-1]
-            
-            last_trade = get_last_trade()
-
-            # CAS A : On a une position ouverte (on cherche à vendre)
-            if last_trade and last_trade['type'] == 'BUY':
-                entry_price = last_trade['entry_price']
-                perf = (current_price - entry_price) / entry_price
+    try:
+        while bot_running:
+            try:
+                # 1. Appel API CoinGecko
+                url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            current_price = data['bitcoin']['usd']
+                            logger.info(f"[ANALYSE] Prix actuel du BTC : {current_price} $ | Capital : {current_capital:.2f} $ | Crypto possédée : {crypto_held:.5f} BTC")
+                        else:
+                            logger.error(f"Erreur API CoinGecko : HTTP {response.status}")
                 
-                logger.info(f"EN POSITION: {perf*100:+.2f}% | Prix: {current_price}")
+                # 2. ---> LOGIQUE DE STRATÉGIE DE TEST <---
+                # Attention : Ceci est une stratégie fictive pour vérifier que l'enregistrement des trades fonctionne.
+                if current_price > 0:
+                    
+                    # CONDITION D'ACHAT (Si on a tout en capital USD)
+                    if current_capital >= 10: # On achète si on a au moins 10$
+                        logger.info(">>> SIGNAL D'ACHAT DÉTECTÉ <<<")
+                        amount_to_buy = current_capital / current_price
+                        
+                        trade_data = {
+                            'timestamp': datetime.now().isoformat(),
+                            'type': 'BUY',
+                            'symbol': 'BTC/USD',
+                            'entry_price': current_price,
+                            'exit_price': 0.0,
+                            'amount': amount_to_buy,
+                            'profit': 0.0,
+                            'status': 'open'
+                        }
+                        add_trade(trade_data)
+                        
+                        # Mise à jour du portefeuille
+                        crypto_held = amount_to_buy
+                        current_capital = 0.0
+                        last_buy_price = current_price
+                        logger.info(f"Achat effectué. Nouveau solde crypto : {crypto_held:.5f} BTC")
+                        
+                    # CONDITION DE VENTE (Si on possède de la crypto)
+                    elif crypto_held > 0:
+                        logger.info(">>> SIGNAL DE VENTE DÉTECTÉ <<<")
+                        profit = (current_price - last_buy_price) * crypto_held
+                        
+                        trade_data = {
+                            'timestamp': datetime.now().isoformat(),
+                            'type': 'SELL',
+                            'symbol': 'BTC/USD',
+                            'entry_price': last_buy_price,
+                            'exit_price': current_price,
+                            'amount': crypto_held,
+                            'profit': profit,
+                            'status': 'closed'
+                        }
+                        add_trade(trade_data)
+                        
+                        # Mise à jour du portefeuille
+                        current_capital = crypto_held * current_price
+                        crypto_held = 0.0
+                        logger.info(f"Vente effectuée. Profit : {profit:.2f} $. Nouveau capital : {current_capital:.2f} $")
 
-                if perf >= TAKE_PROFIT or perf <= -STOP_LOSS:
-                    profit_usdt = (current_price - entry_price) * last_trade['amount']
-                    save_trade('SELL', current_price, last_trade['amount'], profit_usdt)
-                    current_capital += profit_usdt
-                    logger.info(f">>> VENTE EFFECTUÉE: {profit_usdt:+.2f}$")
-                
-            # CAS B : Pas de position (on cherche à acheter)
-            else:
-                # Stratégie : 1 Rouge + 2 Vertes
-                c1 = df.iloc[-4] # Il y a 3 min
-                c2 = df.iloc[-3] # Il y a 2 min
-                c3 = df.iloc[-2] # Il y a 1 min (fermée)
-                
-                is_c1_red = c1['close'] < c1['open']
-                is_c2_green = c2['close'] > c2['open']
-                is_c3_green = c3['close'] > c3['open']
-                
-                logger.info(f"SCAN: [{ 'R' if is_c1_red else 'V' }][{ 'V' if is_c2_green else 'R' }][{ 'V' if is_c3_green else 'R' }]")
+                # Pause de 5 minutes (300 secondes) 
+                # (Vous pouvez descendre à 30 secondes pour voir les trades plus vite si vous testez)
+                logger.info("Attente de 5 minutes avant la prochaine analyse...")
+                for _ in range(300):
+                    if not bot_running:
+                        break
+                    await asyncio.sleep(1)
+                    
+            except Exception as e:
+                logger.error(f"Erreur dans la boucle du bot : {e}")
+                for _ in range(60):
+                    if not bot_running:
+                        break
+                    await asyncio.sleep(1)
+                    
+    except Exception as e:
+        logger.error(f"Erreur critique du bot : {e}")
+    finally:
+        bot_status = "Arrêté"
+        bot_running = False
+        logger.info("La boucle du bot s'est arrêtée.")
 
-                if is_c1_red and is_c2_green and is_c3_green:
-                    amount = TRADE_AMOUNT_USDT / current_price
-                    save_trade('BUY', current_price, amount)
-                    logger.info(f">>> ACHAT EFFECTUÉ à {current_price}")
+def start_bot():
+    global bot_running, bot_task
+    bot_running = True
+    loop = asyncio.get_event_loop()
+    bot_task = loop.create_task(run_bot_logic())
 
-            bot_status = "Actif - Veille 1min"
-            # Attente de 60 secondes (vérification chaque minute)
-            for _ in range(60):
-                if not bot_running: break
-                await asyncio.sleep(1)
+def stop_bot():
+    global bot_running
+    bot_running = False
 
-        except Exception as e:
-            logger.error(f"Erreur boucle: {e}")
-            await asyncio.sleep(10)
-    
-    await exchange.close()
-
-# --- FastAPI Setup ---
+# --- Application FastAPI ---
 app = FastAPI()
-templates = Jinja2Templates(directory="templates")
-if os.path.exists("static"):
-    app.mount("/static", StaticFiles(directory="static"), name="static")
 
+if not os.path.exists("templates"):
+    os.makedirs("templates")
+if not os.path.exists("static"):
+    os.makedirs("static")
+
+templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# --- Routes Web ---
 @app.get("/")
-async def dashboard(request: Request):
-    # On prépare les données proprement
-    context_data = {
-        "request": request, # Obligatoire
+async def read_root(request: Request):
+    try:
+        db_trades = get_trades(limit=50)
+        display_trades = list(db_trades)
+        for mem_trade in trade_history_memory:
+            if mem_trade not in display_trades and mem_trade.get('status') == 'open':
+                display_trades.append(mem_trade)
+
+        display_trades.sort(key=lambda x: str(x.get('timestamp', '0')), reverse=True)
+        display_trades = display_trades[:50]
+    except Exception as e:
+        logger.error(f"Erreur chargement dashboard : {e}")
+        display_trades = []
+
+    context = {
+        "request": request,
         "current_price": current_price,
         "current_capital": current_capital,
         "bot_status": bot_status,
-        "trades_history": get_trades(20)
+        "trades_history": display_trades
     }
-    
-    # La nouvelle syntaxe exige de nommer explicitement 'name' et 'context'
-    try:
-        return templates.TemplateResponse(
-            name="index.html", 
-            context=context_data
-        )
-    except Exception as e:
-        logger.error(f"Erreur rendu template: {e}")
-        return {"error": "Fichier index.html introuvable ou mal formé"}
 
+    try:
+        return templates.TemplateResponse(request=request, name="index.html", context=context)
+    except Exception as e:
+        logger.error(f"Erreur rendu HTML : {e}")
+        return {"error": "Erreur serveur"}
+
+# --- Routes API ---
+@app.get("/stats")
+async def api_stats():
+    return {
+        "current_price": current_price,
+        "current_capital": current_capital,
+        "bot_status": bot_status,
+        "trades_history": get_trades(limit=100)
+    }
 
 @app.post("/start")
-async def start_bot():
+async def start_bot_api():
     global bot_running
     if not bot_running:
-        bot_running = True
-        asyncio.create_task(run_bot_logic())
-        return {"message": "Démarré"}
-    return {"message": "Déjà en cours"}
+        start_bot()
+        return {"message": "Bot démarré avec succès."}
+    else:
+        raise HTTPException(status_code=400, detail="Le bot est déjà en cours d'exécution.")
 
 @app.post("/stop")
-async def stop_bot():
+async def stop_bot_api():
     global bot_running
-    bot_running = False
-    return {"message": "Arrêté"}
+    if bot_running:
+        stop_bot()
+        return {"message": "Bot arrêté avec succès."}
+    else:
+        raise HTTPException(status_code=400, detail="Le bot n'est pas en cours d'exécution.")
