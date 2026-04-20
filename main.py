@@ -141,13 +141,25 @@ if os.path.exists("static"):
 
 @app.get("/")
 async def dashboard(request: Request):
-    return templates.TemplateResponse("index.html", {
-        "request": request,
+    # On prépare les données proprement
+    context_data = {
+        "request": request, # Obligatoire
         "current_price": current_price,
         "current_capital": current_capital,
         "bot_status": bot_status,
         "trades_history": get_trades(20)
-    })
+    }
+    
+    # La nouvelle syntaxe exige de nommer explicitement 'name' et 'context'
+    try:
+        return templates.TemplateResponse(
+            name="index.html", 
+            context=context_data
+        )
+    except Exception as e:
+        logger.error(f"Erreur rendu template: {e}")
+        return {"error": "Fichier index.html introuvable ou mal formé"}
+
 
 @app.post("/start")
 async def start_bot():
