@@ -1,8 +1,8 @@
 import asyncio
 import sqlite3
 import os
-import ccxt.async_support as ccxt  # Changé pour avoir les bougies
-import pandas as pd                # Pour analyser les bougies
+import ccxt.async_support as ccxt
+import pandas as pd
 import logging
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
@@ -69,7 +69,7 @@ def add_trade(trade_data):
             INSERT INTO {TRADES_TABLE} (timestamp, type, symbol, entry_price, exit_price, amount, profit, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            trade_data.get('timestamp', datetime.now().isoformat()),
+            datetime.now().isoformat(),
             trade_data.get('type', ''),
             trade_data.get('symbol', ''),
             trade_data.get('entry_price', 0.0),
@@ -91,14 +91,13 @@ current_capital = 1000.00
 crypto_held = 0.0 
 last_buy_price = 0.0 
 bot_status = "Arrêté"
-trade_history_memory = []
 
-# --- Logique du Bot (MODIFIÉE POUR 1 ROUGE + 2 VERTES) ---
+# --- Logique du Bot (KUCOIN + STRATÉGIE 1M) ---
 async def run_bot_logic():
     global bot_running, current_price, current_capital, bot_status, crypto_held, last_buy_price
     
-    # Initialisation de l'échange
-    exchange = ccxt.binance({'enableRateLimit': True})
+    # Utilisation de KuCoin pour éviter les restrictions géographiques
+    exchange = ccxt.kucoin({'enableRateLimit': True})
     bot_status = "En cours d'exécution"
     
     try:
@@ -109,11 +108,11 @@ async def run_bot_logic():
                 df = pd.DataFrame(bars, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
                 current_price = df['close'].iloc[-1]
                 
-                logger.info(f"[ANALYSE] {SYMBOL} : {current_price}$ | Portefeuille : {current_capital:.2f}$ / {crypto_held:.5f} BTC")
+                logger.info(f"[ANALYSE] {SYMBOL} : {current_price}$ | Capital : {current_capital:.2f}$")
 
                 # 2. LOGIQUE DE STRATÉGIE
                 if crypto_held > 0:
-                    # --- ON CHERCHE À VENDRE (TP/SL) ---
+                    # GESTION DE LA VENTE (TP/SL)
                     perf = (current_price - last_buy_price) / last_buy_price
                     if perf >= TAKE_PROFIT or perf <= -STOP_LOSS:
                         reason = "TAKE_PROFIT" if perf >= TAKE_PROFIT else "STOP_LOSS"
@@ -125,23 +124,23 @@ async def run_bot_logic():
                         }
                         add_trade(trade_data)
                         
-                        current_capital = crypto_held * current_price
+                        current_capital += (crypto_held * current_price)
                         crypto_held = 0.0
                         logger.info(f">>> VENTE {reason} à {current_price}$ | Profit: {profit:.2f}$")
 
                 else:
-                    # --- ON CHERCHE À ACHETER (1 ROUGE + 2 VERTES) ---
-                    # On vérifie les bougies précédentes fermées : -4, -3, -2
-                    c1 = df.iloc[-4] # La plus ancienne
-                    c2 = df.iloc[-3]
-                    c3 = df.iloc[-2] # La plus récente fermée
+                    # GESTION DE L'ACHAT (1 ROUGE + 2 VERTES)
+                    # On regarde les bougies fermées -4, -3, -2
+                    c1 = df.iloc[-4] # Bougie d'il y a 3 mins
+                    c2 = df.iloc[-3] # Bougie d'il y a 2 mins
+                    c3 = df.iloc[-2] # Bougie d'il y a 1 min (dernière fermée)
 
                     is_red = c1['close'] < c1['open']
                     is_green1 = c2['close'] > c2['open']
                     is_green2 = c3['close'] > c3['open']
 
                     if is_red and is_green1 and is_green2:
-                        if current_capital >= 10:
+                        if current_capital >= TRADE_AMOUNT_USDT:
                             logger.info(">>> SIGNAL ACHAT DÉTECTÉ <<<")
                             amount_to_buy = TRADE_AMOUNT_USDT / current_price
                             
@@ -152,10 +151,10 @@ async def run_bot_logic():
                             add_trade(trade_data)
                             
                             crypto_held = amount_to_buy
-                            current_capital -= (amount_to_buy * current_price)
+                            current_capital -= TRADE_AMOUNT_USDT
                             last_buy_price = current_price
 
-                # Pause de 60 secondes pour le timeframe 1m
+                # Attente d'une minute
                 for _ in range(60):
                     if not bot_running: break
                     await asyncio.sleep(1)
@@ -174,10 +173,6 @@ def start_bot():
     bot_running = True
     bot_task = asyncio.create_task(run_bot_logic())
 
-def stop_bot():
-    global bot_running
-    bot_running = False
-
 # --- Application FastAPI ---
 app = FastAPI()
 
@@ -194,12 +189,8 @@ async def read_root(request: Request):
         "bot_status": bot_status,
         "trades_history": get_trades(limit=50)
     }
-    # Correction ici : on ajoute request=request
-    return templates.TemplateResponse(
-        request=request, 
-        name="index.html", 
-        context=context
-    )
+    # Correction de l'erreur TemplateResponse missing 1 required positional argument: 'request'
+    return templates.TemplateResponse(request=request, name="index.html", context=context)
 
 @app.get("/stats")
 async def api_stats():
