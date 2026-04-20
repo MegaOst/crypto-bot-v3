@@ -194,7 +194,12 @@ async def read_root(request: Request):
         "bot_status": bot_status,
         "trades_history": get_trades(limit=50)
     }
-    return templates.TemplateResponse(name="index.html", context=context)
+    # Correction ici : on ajoute request=request
+    return templates.TemplateResponse(
+        request=request, 
+        name="index.html", 
+        context=context
+    )
 
 @app.get("/stats")
 async def api_stats():
