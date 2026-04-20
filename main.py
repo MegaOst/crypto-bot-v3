@@ -3,6 +3,7 @@ import sqlite3
 import os
 import ccxt.async_support as ccxt
 import pandas as pd
+import pandas_ta as ta  # <-- NOUVEL IMPORT POUR LES INDICATEURS
 import logging
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
@@ -17,12 +18,13 @@ logger = logging.getLogger(__name__)
 DATABASE_NAME = "trading_bot.db"
 TRADES_TABLE = "trades"
 
-# --- CONFIGURATION STRATÉGIE ---
-SYMBOL = "BTC/USDT"
-TIMEFRAME = "1m"
+# --- CONFIGURATION STRATÉGIE (MISE À JOUR) ---
+SYMBOL = "SOL/USDT"
+TIMEFRAME = "15m"
 TRADE_AMOUNT_USDT = 50 
-TAKE_PROFIT = 0.002 # +0.2%
-STOP_LOSS = 0.001   # -0.1%
+TAKE_PROFIT = 0.01      # +1.0% (Objectif)
+STOP_LOSS = 0.0075      # -0.75% (Sécurité)
+TIME_OUT_CANDLES = 10   # Fermeture après 10 bougies si rien n'est touché
 
 # --- Fonctions de gestion de la base de données ---
 def initialize_database():
@@ -91,31 +93,54 @@ current_capital = 1000.00
 crypto_held = 0.0 
 last_buy_price = 0.0 
 bot_status = "Arrêté"
+candles_held = 0  # <-- NOUVEAU : Pour compter le temps passé dans le trade
 
-# --- Logique du Bot (KUCOIN + STRATÉGIE 1M) ---
+# --- Logique du Bot (KUCOIN + STRATÉGIE SOL 15M) ---
 async def run_bot_logic():
-    global bot_running, current_price, current_capital, bot_status, crypto_held, last_buy_price
+    global bot_running, current_price, current_capital, bot_status, crypto_held, last_buy_price, candles_held
     
-    # Utilisation de KuCoin pour éviter les restrictions géographiques
     exchange = ccxt.kucoin({'enableRateLimit': True})
     bot_status = "En cours d'exécution"
+    
+    # Variables pour détecter si on vient de passer à une nouvelle bougie
+    last_candle_timestamp = None
     
     try:
         while bot_running:
             try:
-                # 1. Récupération des bougies (OHLCV)
-                bars = await exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=10)
+                # 1. Récupération de 60 bougies (nécessaire pour calculer l'EMA 50)
+                bars = await exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=60)
                 df = pd.DataFrame(bars, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
-                current_price = df['close'].iloc[-1]
                 
+                # Calcul des indicateurs techniques
+                df['EMA_50'] = ta.ema(df['close'], length=50)
+                df['RSI_14'] = ta.rsi(df['close'], length=14)
+                
+                current_price = df['close'].iloc[-1] # Prix actuel en direct
+                current_candle_ts = df['ts'].iloc[-1]
+                
+                # Si c'est une nouvelle bougie de 15m, on incrémente le compteur de temps du trade
+                if last_candle_timestamp is not None and current_candle_ts != last_candle_timestamp:
+                    if crypto_held > 0:
+                        candles_held += 1
+                last_candle_timestamp = current_candle_ts
+
                 logger.info(f"[ANALYSE] {SYMBOL} : {current_price}$ | Capital : {current_capital:.2f}$")
 
                 # 2. LOGIQUE DE STRATÉGIE
                 if crypto_held > 0:
-                    # GESTION DE LA VENTE (TP/SL)
+                    # GESTION DE LA VENTE (TP/SL/TIME-OUT)
                     perf = (current_price - last_buy_price) / last_buy_price
-                    if perf >= TAKE_PROFIT or perf <= -STOP_LOSS:
-                        reason = "TAKE_PROFIT" if perf >= TAKE_PROFIT else "STOP_LOSS"
+                    reason = None
+                    
+                    if perf >= TAKE_PROFIT:
+                        reason = "TAKE_PROFIT"
+                    elif perf <= -STOP_LOSS:
+                        reason = "STOP_LOSS"
+                    elif candles_held >= TIME_OUT_CANDLES:
+                        reason = "TIME_OUT"
+                        
+                    if reason:
                         profit = (current_price - last_buy_price) * crypto_held
                         
                         trade_data = {
@@ -126,35 +151,45 @@ async def run_bot_logic():
                         
                         current_capital += (crypto_held * current_price)
                         crypto_held = 0.0
+                        candles_held = 0
                         logger.info(f">>> VENTE {reason} à {current_price}$ | Profit: {profit:.2f}$")
 
                 else:
-                    # GESTION DE L'ACHAT (1 ROUGE + 2 VERTES)
-                    # On regarde les bougies fermées -4, -3, -2
-                    c1 = df.iloc[-4] # Bougie d'il y a 3 mins
-                    c2 = df.iloc[-3] # Bougie d'il y a 2 mins
-                    c3 = df.iloc[-2] # Bougie d'il y a 1 min (dernière fermée)
+                    # GESTION DE L'ACHAT (Rebond en Tendance)
+                    # On analyse les bougies CLÔTURÉES (iloc[-2] et iloc[-3]) pour éviter les faux signaux
+                    precedente = df.iloc[-3]
+                    actuelle = df.iloc[-2]
+                    
+                    # On s'assure que l'EMA 50 est calculée
+                    if pd.notna(actuelle['EMA_50']):
+                        # Conditions strictes de la stratégie
+                        tendance_haussiere = actuelle['close'] > actuelle['EMA_50']
+                        respiration = precedente['RSI_14'] < 45 or actuelle['RSI_14'] < 45
+                        
+                        bougie_rouge_avant = precedente['close'] < precedente['open']
+                        bougie_verte_actuelle = actuelle['close'] > actuelle['open']
+                        
+                        milieu_rouge_precedente = (precedente['open'] + precedente['close']) / 2
+                        force_acheteuse = actuelle['close'] > milieu_rouge_precedente
 
-                    is_red = c1['close'] < c1['open']
-                    is_green1 = c2['close'] > c2['open']
-                    is_green2 = c3['close'] > c3['open']
+                        if tendance_haussiere and respiration and bougie_rouge_avant and bougie_verte_actuelle and force_acheteuse:
+                            if current_capital >= TRADE_AMOUNT_USDT:
+                                logger.info(">>> SIGNAL ACHAT DÉTECTÉ (Rebond SOL) <<<")
+                                amount_to_buy = TRADE_AMOUNT_USDT / current_price
+                                
+                                trade_data = {
+                                    'type': 'BUY', 'symbol': SYMBOL, 'entry_price': current_price,
+                                    'amount': amount_to_buy, 'status': 'open'
+                                }
+                                add_trade(trade_data)
+                                
+                                crypto_held = amount_to_buy
+                                current_capital -= TRADE_AMOUNT_USDT
+                                last_buy_price = current_price
+                                candles_held = 0
 
-                    if is_red and is_green1 and is_green2:
-                        if current_capital >= TRADE_AMOUNT_USDT:
-                            logger.info(">>> SIGNAL ACHAT DÉTECTÉ <<<")
-                            amount_to_buy = TRADE_AMOUNT_USDT / current_price
-                            
-                            trade_data = {
-                                'type': 'BUY', 'symbol': SYMBOL, 'entry_price': current_price,
-                                'amount': amount_to_buy, 'status': 'open'
-                            }
-                            add_trade(trade_data)
-                            
-                            crypto_held = amount_to_buy
-                            current_capital -= TRADE_AMOUNT_USDT
-                            last_buy_price = current_price
-
-                # Attente d'une minute
+                # Attente (On vérifie le prix toutes les minutes pour déclencher le TP/SL au bon moment, 
+                # même si les bougies sont en 15m)
                 for _ in range(60):
                     if not bot_running: break
                     await asyncio.sleep(1)
@@ -189,7 +224,6 @@ async def read_root(request: Request):
         "bot_status": bot_status,
         "trades_history": get_trades(limit=50)
     }
-    # Correction de l'erreur TemplateResponse missing 1 required positional argument: 'request'
     return templates.TemplateResponse(request=request, name="index.html", context=context)
 
 @app.get("/stats")
