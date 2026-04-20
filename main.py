@@ -1,7 +1,8 @@
 import asyncio
 import sqlite3
 import os
-import aiohttp
+import ccxt.async_support as ccxt  # Changé pour avoir les bougies
+import pandas as pd                # Pour analyser les bougies
 import logging
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
@@ -16,9 +17,15 @@ logger = logging.getLogger(__name__)
 DATABASE_NAME = "trading_bot.db"
 TRADES_TABLE = "trades"
 
+# --- CONFIGURATION STRATÉGIE ---
+SYMBOL = "BTC/USDT"
+TIMEFRAME = "1m"
+TRADE_AMOUNT_USDT = 50 
+TAKE_PROFIT = 0.002 # +0.2%
+STOP_LOSS = 0.001   # -0.1%
+
 # --- Fonctions de gestion de la base de données ---
 def initialize_database():
-    """Crée la base de données et la table des trades si elles n'existent pas."""
     try:
         conn = sqlite3.connect(DATABASE_NAME)
         cursor = conn.cursor()
@@ -37,10 +44,8 @@ def initialize_database():
         ''')
         conn.commit()
         conn.close()
-        logger.info(f"Base de données '{DATABASE_NAME}' et table '{TRADES_TABLE}' prêtes.")
     except Exception as e:
-        logger.error(f"Erreur lors de l'initialisation de la base de données : {e}")
-        exit(1)
+        logger.error(f"Erreur DB : {e}")
 
 initialize_database()
 
@@ -49,17 +54,11 @@ def get_trades(limit=50):
         conn = sqlite3.connect(DATABASE_NAME)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute(f'''
-            SELECT timestamp, type, symbol, entry_price, exit_price, amount, profit, status
-            FROM {TRADES_TABLE}
-            ORDER BY timestamp DESC
-            LIMIT ?
-        ''', (limit,))
+        cursor.execute(f'SELECT * FROM {TRADES_TABLE} ORDER BY timestamp DESC LIMIT ?', (limit,))
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
-    except Exception as e:
-        logger.error(f"Erreur SQLite lors de la récupération des trades : {e}")
+    except:
         return []
 
 def add_trade(trade_data):
@@ -81,116 +80,99 @@ def add_trade(trade_data):
         ))
         conn.commit()
         conn.close()
-        logger.info(f"Nouveau trade ajouté en base : {trade_data['type']} à {trade_data.get('entry_price', trade_data.get('exit_price'))}$")
     except Exception as e:
-        logger.error(f"Erreur lors de l'ajout du trade en base : {e}")
+        logger.error(f"Erreur ajout trade : {e}")
 
 # --- Variables Globales ---
 bot_running = False
 bot_task = None
 current_price = 0.0
 current_capital = 1000.00
-crypto_held = 0.0 # Ajout d'une variable pour savoir si on possède de la crypto
-last_buy_price = 0.0 # Pour calculer le profit à la vente
+crypto_held = 0.0 
+last_buy_price = 0.0 
 bot_status = "Arrêté"
 trade_history_memory = []
 
-# --- Logique du Bot ---
+# --- Logique du Bot (MODIFIÉE POUR 1 ROUGE + 2 VERTES) ---
 async def run_bot_logic():
     global bot_running, current_price, current_capital, bot_status, crypto_held, last_buy_price
+    
+    # Initialisation de l'échange
+    exchange = ccxt.binance({'enableRateLimit': True})
     bot_status = "En cours d'exécution"
-    logger.info(f"Bot démarré. Vérification du marché...")
     
     try:
         while bot_running:
             try:
-                # 1. Appel API CoinGecko
-                url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            current_price = data['bitcoin']['usd']
-                            logger.info(f"[ANALYSE] Prix actuel du BTC : {current_price} $ | Capital : {current_capital:.2f} $ | Crypto possédée : {crypto_held:.5f} BTC")
-                        else:
-                            logger.error(f"Erreur API CoinGecko : HTTP {response.status}")
+                # 1. Récupération des bougies (OHLCV)
+                bars = await exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=10)
+                df = pd.DataFrame(bars, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
+                current_price = df['close'].iloc[-1]
                 
-                # 2. ---> LOGIQUE DE STRATÉGIE DE TEST <---
-                # Attention : Ceci est une stratégie fictive pour vérifier que l'enregistrement des trades fonctionne.
-                if current_price > 0:
-                    
-                    # CONDITION D'ACHAT (Si on a tout en capital USD)
-                    if current_capital >= 10: # On achète si on a au moins 10$
-                        logger.info(">>> SIGNAL D'ACHAT DÉTECTÉ <<<")
-                        amount_to_buy = current_capital / current_price
-                        
-                        trade_data = {
-                            'timestamp': datetime.now().isoformat(),
-                            'type': 'BUY',
-                            'symbol': 'BTC/USD',
-                            'entry_price': current_price,
-                            'exit_price': 0.0,
-                            'amount': amount_to_buy,
-                            'profit': 0.0,
-                            'status': 'open'
-                        }
-                        add_trade(trade_data)
-                        
-                        # Mise à jour du portefeuille
-                        crypto_held = amount_to_buy
-                        current_capital = 0.0
-                        last_buy_price = current_price
-                        logger.info(f"Achat effectué. Nouveau solde crypto : {crypto_held:.5f} BTC")
-                        
-                    # CONDITION DE VENTE (Si on possède de la crypto)
-                    elif crypto_held > 0:
-                        logger.info(">>> SIGNAL DE VENTE DÉTECTÉ <<<")
+                logger.info(f"[ANALYSE] {SYMBOL} : {current_price}$ | Portefeuille : {current_capital:.2f}$ / {crypto_held:.5f} BTC")
+
+                # 2. LOGIQUE DE STRATÉGIE
+                if crypto_held > 0:
+                    # --- ON CHERCHE À VENDRE (TP/SL) ---
+                    perf = (current_price - last_buy_price) / last_buy_price
+                    if perf >= TAKE_PROFIT or perf <= -STOP_LOSS:
+                        reason = "TAKE_PROFIT" if perf >= TAKE_PROFIT else "STOP_LOSS"
                         profit = (current_price - last_buy_price) * crypto_held
                         
                         trade_data = {
-                            'timestamp': datetime.now().isoformat(),
-                            'type': 'SELL',
-                            'symbol': 'BTC/USD',
-                            'entry_price': last_buy_price,
-                            'exit_price': current_price,
-                            'amount': crypto_held,
-                            'profit': profit,
-                            'status': 'closed'
+                            'type': 'SELL', 'symbol': SYMBOL, 'entry_price': last_buy_price,
+                            'exit_price': current_price, 'amount': crypto_held, 'profit': profit, 'status': reason
                         }
                         add_trade(trade_data)
                         
-                        # Mise à jour du portefeuille
                         current_capital = crypto_held * current_price
                         crypto_held = 0.0
-                        logger.info(f"Vente effectuée. Profit : {profit:.2f} $. Nouveau capital : {current_capital:.2f} $")
+                        logger.info(f">>> VENTE {reason} à {current_price}$ | Profit: {profit:.2f}$")
 
-                # Pause de 5 minutes (300 secondes) 
-                # (Vous pouvez descendre à 30 secondes pour voir les trades plus vite si vous testez)
-                logger.info("Attente de 5 minutes avant la prochaine analyse...")
-                for _ in range(300):
-                    if not bot_running:
-                        break
+                else:
+                    # --- ON CHERCHE À ACHETER (1 ROUGE + 2 VERTES) ---
+                    # On vérifie les bougies précédentes fermées : -4, -3, -2
+                    c1 = df.iloc[-4] # La plus ancienne
+                    c2 = df.iloc[-3]
+                    c3 = df.iloc[-2] # La plus récente fermée
+
+                    is_red = c1['close'] < c1['open']
+                    is_green1 = c2['close'] > c2['open']
+                    is_green2 = c3['close'] > c3['open']
+
+                    if is_red and is_green1 and is_green2:
+                        if current_capital >= 10:
+                            logger.info(">>> SIGNAL ACHAT DÉTECTÉ <<<")
+                            amount_to_buy = TRADE_AMOUNT_USDT / current_price
+                            
+                            trade_data = {
+                                'type': 'BUY', 'symbol': SYMBOL, 'entry_price': current_price,
+                                'amount': amount_to_buy, 'status': 'open'
+                            }
+                            add_trade(trade_data)
+                            
+                            crypto_held = amount_to_buy
+                            current_capital -= (amount_to_buy * current_price)
+                            last_buy_price = current_price
+
+                # Pause de 60 secondes pour le timeframe 1m
+                for _ in range(60):
+                    if not bot_running: break
                     await asyncio.sleep(1)
                     
             except Exception as e:
-                logger.error(f"Erreur dans la boucle du bot : {e}")
-                for _ in range(60):
-                    if not bot_running:
-                        break
-                    await asyncio.sleep(1)
+                logger.error(f"Erreur boucle : {e}")
+                await asyncio.sleep(10)
                     
-    except Exception as e:
-        logger.error(f"Erreur critique du bot : {e}")
     finally:
+        await exchange.close()
         bot_status = "Arrêté"
         bot_running = False
-        logger.info("La boucle du bot s'est arrêtée.")
 
 def start_bot():
     global bot_running, bot_task
     bot_running = True
-    loop = asyncio.get_event_loop()
-    bot_task = loop.create_task(run_bot_logic())
+    bot_task = asyncio.create_task(run_bot_logic())
 
 def stop_bot():
     global bot_running
@@ -199,52 +181,28 @@ def stop_bot():
 # --- Application FastAPI ---
 app = FastAPI()
 
-if not os.path.exists("templates"):
-    os.makedirs("templates")
-if not os.path.exists("static"):
-    os.makedirs("static")
-
 templates = Jinja2Templates(directory="templates")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# --- Routes Web ---
 @app.get("/")
 async def read_root(request: Request):
-    try:
-        db_trades = get_trades(limit=50)
-        display_trades = list(db_trades)
-        for mem_trade in trade_history_memory:
-            if mem_trade not in display_trades and mem_trade.get('status') == 'open':
-                display_trades.append(mem_trade)
-
-        display_trades.sort(key=lambda x: str(x.get('timestamp', '0')), reverse=True)
-        display_trades = display_trades[:50]
-    except Exception as e:
-        logger.error(f"Erreur chargement dashboard : {e}")
-        display_trades = []
-
     context = {
         "request": request,
         "current_price": current_price,
         "current_capital": current_capital,
         "bot_status": bot_status,
-        "trades_history": display_trades
+        "trades_history": get_trades(limit=50)
     }
+    return templates.TemplateResponse(name="index.html", context=context)
 
-    try:
-        return templates.TemplateResponse(request=request, name="index.html", context=context)
-    except Exception as e:
-        logger.error(f"Erreur rendu HTML : {e}")
-        return {"error": "Erreur serveur"}
-
-# --- Routes API ---
 @app.get("/stats")
 async def api_stats():
     return {
         "current_price": current_price,
         "current_capital": current_capital,
         "bot_status": bot_status,
-        "trades_history": get_trades(limit=100)
+        "trades_history": get_trades(limit=10)
     }
 
 @app.post("/start")
@@ -252,15 +210,11 @@ async def start_bot_api():
     global bot_running
     if not bot_running:
         start_bot()
-        return {"message": "Bot démarré avec succès."}
-    else:
-        raise HTTPException(status_code=400, detail="Le bot est déjà en cours d'exécution.")
+        return {"message": "Démarré"}
+    return {"message": "Déjà en cours"}
 
 @app.post("/stop")
 async def stop_bot_api():
     global bot_running
-    if bot_running:
-        stop_bot()
-        return {"message": "Bot arrêté avec succès."}
-    else:
-        raise HTTPException(status_code=400, detail="Le bot n'est pas en cours d'exécution.")
+    bot_running = False
+    return {"message": "Arrêté"}
